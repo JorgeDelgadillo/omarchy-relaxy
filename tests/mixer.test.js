@@ -61,7 +61,10 @@ const stormStatsAfterLoop = mixer.sink.stats;
 const renderedAfterLoop = stormStatsAfterLoop.get_value("rendered");
 const [, stormState] = mixer.pipeline.get_state(0);
 if (eosCount === 0) throw new Error("Storm test did not reach EOS");
-if (renderedAfterLoop <= renderedBeforeLoop) throw new Error("Storm pipeline did not render audio after EOS");
+if (renderedAfterLoop <= renderedBeforeLoop) {
+  print(JSON.stringify({ eosCount, renderedBeforeLoop, renderedAfterLoop, events }));
+  throw new Error("Storm pipeline did not render audio after EOS");
+}
 if (stormState !== Gst.State.PLAYING) throw new Error(`Storm pipeline did not resume PLAYING: ${stormState}`);
 
 const liveMixState = {

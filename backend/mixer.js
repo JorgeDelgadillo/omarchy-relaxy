@@ -34,6 +34,8 @@ export class AmbientMixer {
     this.branches = new Map();
     this.failedSounds = new Set();
     this.topologyKey = "";
+    this.activeSpecs = [];
+    this.eosRecoverySource = 0;
     this.lastSpecs = [];
     this.lastState = { playing: false, masterVolume: 1, presets: [{ volumes: {}, mutes: {} }] };
     this.masterVolume = 1;
@@ -73,21 +75,28 @@ export class AmbientMixer {
       // are applied. Reapply levels once the pipeline has completed preroll.
       this.applyVolumes();
     } else if (message.type === Gst.MessageType.EOS) {
-      // A mixed pipeline can post EOS while one branch is still active. The
-      // pipeline-level seek resets all file branches consistently, then the
-      // requested pipeline state is restored explicitly.
+      // Defer recovery out of the bus callback. State changes and pipeline
+      // teardown can wait for streaming work that is still handling EOS.
+      this.scheduleEosRecovery();
+    }
+  }
+
+  scheduleEosRecovery() {
+    if (this.eosRecoverySource || !this.pipeline) return;
+    const eosPipeline = this.pipeline;
+    this.eosRecoverySource = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      this.eosRecoverySource = 0;
+      if (this.pipeline !== eosPipeline || this.activeSpecs.length === 0) return GLib.SOURCE_REMOVE;
       try {
-        this.pipeline.set_state(Gst.State.PAUSED);
-        this.pipeline.seek_simple(
-          Gst.Format.TIME,
-          Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
-          0,
-        );
+        // Rebuilding the active topology is reliable for both file-only mixes
+        // and mixes that also contain live noise sources.
+        this.installPipeline([...this.activeSpecs]);
+        this.onEvent({ type: "pipeline-ready" });
       } catch (error) {
         this.onEvent({ type: "error", soundId: null, message: this.errorMessage(error), debug: "" });
       }
-      this.syncPipeline();
-    }
+      return GLib.SOURCE_REMOVE;
+    });
   }
 
   applyVolumes() {
@@ -130,6 +139,10 @@ export class AmbientMixer {
   }
 
   disposePipeline() {
+    if (this.eosRecoverySource) {
+      GLib.source_remove(this.eosRecoverySource);
+      this.eosRecoverySource = 0;
+    }
     if (!this.pipeline) return;
     if (this.bus) this.bus.remove_signal_watch();
     this.pipeline.set_state(Gst.State.NULL);
@@ -180,7 +193,7 @@ export class AmbientMixer {
   }
 
   rebuildPipeline() {
-    const specs = this.lastSpecs.filter((spec) => !this.failedSounds.has(spec.id));
+    const specs = this.activeSpecs.filter((spec) => !this.failedSounds.has(spec.id));
     try {
       this.installPipeline(specs);
       this.onEvent({ type: "pipeline-ready" });
@@ -205,6 +218,7 @@ export class AmbientMixer {
       const muted = preset.mutes[spec.id] !== false;
       if (!muted && level > 0 && !this.failedSounds.has(spec.id)) desired.push(spec);
     }
+    this.activeSpecs = desired;
 
     const nextTopologyKey = this.topologyFor(desired);
     if (nextTopologyKey !== this.topologyKey) {
@@ -227,6 +241,7 @@ export class AmbientMixer {
 
   stop() {
     this.disposePipeline();
+    this.activeSpecs = [];
     this.topologyKey = "";
   }
 }
