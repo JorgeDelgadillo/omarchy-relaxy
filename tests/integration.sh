@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/relaxy-integration.XXXXXX")"
+socket_path="$runtime_dir/backend.sock"
+state_path="$runtime_dir/state.json"
+backend_pid=""
+
+cleanup() {
+  if [[ -n "$backend_pid" ]] && kill -0 "$backend_pid" 2>/dev/null; then
+    kill -TERM "$backend_pid" 2>/dev/null || true
+    wait "$backend_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$runtime_dir"
+}
+trap cleanup EXIT
+
+RELAXY_AUDIO_SINK=fakesink gjs -m "$repo_dir/backend/relaxy.js" \
+  --socket "$socket_path" \
+  --state "$state_path" \
+  --assets "$repo_dir/assets/sounds" \
+  >"$runtime_dir/backend.log" 2>&1 &
+backend_pid=$!
+
+for _attempt in $(seq 1 50); do
+  [[ -S "$socket_path" ]] && break
+  sleep 0.1
+done
+[[ -S "$socket_path" ]] || { sed -n '1,120p' "$runtime_dir/backend.log"; exit 1; }
+
+command_response() {
+  gjs -m "$repo_dir/backend/relaxy.js" --command "$1" --socket "$socket_path"
+}
+
+get_state() {
+  command_response '{"id":"integration-get-state","action":"get-state","payload":{}}'
+}
+
+response="$(get_state)"
+jq -e '.ok == true and .state.schemaVersion == 1 and ((.state.presets | length) == 1)' <<<"$response" >/dev/null
+
+response="$(command_response '{"id":"integration-volume","action":"set-master-volume","payload":{"volume":0.35}}')"
+jq -e '.ok == true and .state.masterVolume == 0.35' <<<"$response" >/dev/null
+
+response="$(command_response '{"id":"integration-preset","action":"add-preset","payload":{"name":"Integration Focus"}}')"
+jq -e '.ok == true and ((.state.presets | length) == 2)' <<<"$response" >/dev/null
+
+response="$(command_response '{"id":"integration-custom","action":"add-custom-sound","payload":{"path":"/tmp/integration.ogg","name":"Integration Sound"}}')"
+jq -e '.ok == true and (.state.customSounds | length) == 1' <<<"$response" >/dev/null
+
+custom_id="$(jq -r '.state.customSounds[0].id' <<<"$response")"
+response="$(command_response "{\"id\":\"integration-hide\",\"action\":\"set-hide-inactive\",\"payload\":{\"value\":true}}")"
+jq -e '.ok == true and .state.presets[1].hideInactive == true' <<<"$response" >/dev/null
+
+response="$(get_state)"
+jq -e --arg custom_id "$custom_id" '.state.masterVolume == 0.35 and .state.customSounds[0].id == $custom_id and .state.presets[1].hideInactive == true' <<<"$response" >/dev/null
+
+if mpris_status="$(gdbus call --session \
+  --dest org.mpris.MediaPlayer2.Relaxy \
+  --object-path /org/mpris/MediaPlayer2 \
+  --method org.freedesktop.DBus.Properties.Get \
+  org.mpris.MediaPlayer2.Player PlaybackStatus 2>/dev/null)"; then
+  [[ "$mpris_status" == *"Playing"* ]]
+  gdbus call --session \
+    --dest org.mpris.MediaPlayer2.Relaxy \
+    --object-path /org/mpris/MediaPlayer2 \
+    --method org.mpris.MediaPlayer2.Player.PlayPause >/dev/null
+  response="$(get_state)"
+  jq -e '.state.playing == false' <<<"$response" >/dev/null
+fi
+
+[[ -f "$state_path" ]]
+jq -e '.schemaVersion == 1 and .masterVolume == 0.35' "$state_path" >/dev/null
+
+echo "Relaxy backend integration test passed."

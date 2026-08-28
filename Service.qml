@@ -22,6 +22,7 @@ Item {
     id: backend
     command: [
       "gjs",
+      "-m",
       root.pluginDirectory + "/backend/relaxy.js",
       "--socket", root.socketPath,
       "--state", root.statePath,
@@ -56,4 +57,3 @@ Item {
     backend.running = false;
   }
 }
-
