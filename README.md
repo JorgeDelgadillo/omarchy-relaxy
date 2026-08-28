@@ -36,10 +36,9 @@ Review the repository before installing it because Omarchy plugins run as
 trusted, unsandboxed code inside the long-lived shell process.
 
 ```bash
-omarchy plugin add https://example.invalid/jdelgadillo/omarchy-relaxy.git --enable
+omarchy plugin add https://github.com/JorgeDelgadillo/omarchy-relaxy.git --enable
 ```
 
-Replace the example URL with the repository URL where this plugin is hosted.
 The `--enable` flag adds the widget to the bar. Without it, enable the plugin
 later with:
 
@@ -55,10 +54,10 @@ omarchy plugin validate /absolute/path/to/omarchy-relaxy
 omarchy plugin add file:///absolute/path/to/omarchy-relaxy --enable --yes
 ```
 
-After installation, reload the shell if it does not rescan automatically:
+After installation, restart the shell if it does not rescan automatically:
 
 ```bash
-omarchy reload
+omarchy restart shell
 ```
 
 ## Usage
@@ -101,6 +100,10 @@ RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
 ./tests/service_contract.sh
 ```
 
+The mixer regression test intentionally runs for more than thirty seconds. It
+waits past the end of `storm.ogg` to verify that mixed file and live-noise
+playback recovers correctly.
+
 Run the socket and MPRIS integration test in a session that permits temporary
 Unix sockets:
 
@@ -128,8 +131,14 @@ upstream project and its own licensing terms apply to its source and assets.
 If the icon is absent, verify that the plugin is enabled and that its entry is
 present in the bar layout. If playback is silent, check that GStreamer can
 load an audio sink and that another application has not claimed an exclusive
-device. Run the integration test with `RELAXY_AUDIO_SINK=fakesink` to isolate
-the mixer from the physical audio device.
+device. Run the mixer test with `RELAXY_AUDIO_SINK=fakesink` to isolate the
+mixer from the physical audio device.
+
+When several sounds are active, a finite recording can reach end-of-stream
+before the other branches. Relaxy schedules a safe pipeline recovery and
+rebuilds the active mix. If controls stop responding, inspect the Omarchy
+Shell log and restart the shell; do not delete the state file unless resetting
+the user's presets and volumes is intentional.
 
 Backend diagnostics are written to the Omarchy shell log. The backend reports
 missing or unreadable custom files as sound-specific errors and keeps the

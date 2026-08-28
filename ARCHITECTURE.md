@@ -44,7 +44,7 @@ management, custom sound management, and playback preferences.
 ## Audio mixer
 
 `AmbientMixer` creates a single GStreamer pipeline with an `audiomixer`, a
-master `volume`, and an automatic sink. File sounds use looping
+master `volume`, and an automatic sink. File sounds use finite
 `uridecodebin` branches. Pink and white noise use live `audiotestsrc` branches
 with the corresponding GStreamer wave enum. Branches are created only for
 unmuted tracks with a positive volume, which keeps idle playback inexpensive.
@@ -55,6 +55,16 @@ GStreamer errors are associated with their sound id and remove only the bad
 branch so another track can continue playing. The power-profile monitor pauses
 active playback when the system enters power-saver mode and leaves it paused
 until the user starts playback again.
+
+When a mixed pipeline posts `EOS`, the mixer schedules recovery on the GLib
+main loop and rebuilds the current active topology from the beginning. The
+recovery is intentionally not performed inside the GStreamer bus callback:
+state transitions and teardown can wait for streaming work, especially with
+`pipewiresink`, which would otherwise block the backend socket and freeze the
+UI. `activeSpecs` contains the currently audible branches; `lastSpecs` contains
+all available catalog and custom sounds and must not be used for playback
+recovery. Dynamic decoder preroll also triggers a second volume application so
+stored levels are not lost when a file branch links.
 
 ## State model
 
@@ -80,8 +90,10 @@ sound mixer. `Raise` asks Omarchy to summon the widget when available.
 - Shell-facing QML is checked with the Omarchy plugin validator, a QML parser,
   and focused UI/service contract checks.
 - State transformations are covered by `tests/model.test.js`.
-- GStreamer branch creation is covered by `tests/mixer.test.js` with a fake
-  sink.
+- GStreamer branch creation and end-of-stream recovery are covered by
+  `tests/mixer.test.js` with a fake sink. The test covers file-only mixes and a
+  file mixed with a live noise source, and intentionally runs past the
+  25-second `storm.ogg` recording.
 - The Unix socket protocol, persistence, custom sounds, and MPRIS controls are
   exercised by `tests/integration.sh`.
 - Audio binaries are verified against `assets/SHA256SUMS`.

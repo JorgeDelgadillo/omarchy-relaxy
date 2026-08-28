@@ -1,0 +1,86 @@
+# Agent Guide
+
+This file records the working context for agents maintaining Relaxy.
+
+## Project scope
+
+Relaxy is an unofficial Omarchy schema-version-1 plugin. The repository root
+contains the plugin manifest, QML entry points, GJS backend, bundled audio, and
+tests. Runtime installation belongs in:
+
+```text
+$HOME/.config/omarchy/plugins/jdelgadillo.relaxy/
+```
+
+Never edit `/usr/share/omarchy/`; it is managed by the Omarchy package. The
+user-owned plugin is installed and enabled with `omarchy plugin` commands, and
+the shell can be reloaded with `omarchy restart shell`.
+
+## Collaboration rules
+
+- Keep source code, comments, tests, and documentation in English.
+- Make one local Git commit for each implementation step.
+- Never run `git push`. The repository may have a remote, but publication is a
+  deliberate user action.
+- Preserve unrelated user changes and preserve
+  `$XDG_STATE_HOME/relaxy/state.json` unless a state reset is explicitly
+  requested.
+- Before handing off work, run the relevant checks and leave the worktree
+  clean when possible.
+
+## Runtime architecture
+
+`Service.qml` owns the long-lived GJS backend process. `BarWidget.qml` loads
+`ui/Panel.qml`, which sends newline-delimited JSON commands through the local
+Unix socket. `backend/relaxy.js` owns persistent state, MPRIS, power-saver
+handling, and `AmbientMixer` from `backend/mixer.js`.
+
+The mixer builds one GStreamer pipeline. File branches use `uridecodebin`,
+while pink and white noise use live `audiotestsrc`. Only unmuted sounds with a
+positive level are included in the active topology. Volume properties are
+applied after decoder preroll as well as during normal synchronization.
+
+### Critical GStreamer invariant
+
+Do not call `set_state()`, `seek_simple()`, pipeline teardown, or pipeline
+rebuild directly from `AmbientMixer.handleMessage()` while handling a bus
+`EOS` message. With `pipewiresink`, those operations can wait for streaming
+work that is still processing the message and deadlock the backend socket.
+
+The current implementation calls `scheduleEosRecovery()`, which defers the
+operation to the GLib main loop and rebuilds `activeSpecs`. Keep the recovery
+coalesced to one pending idle source, cancel it when disposing the pipeline,
+and do not substitute `lastSpecs` for `activeSpecs`.
+
+## Validation commands
+
+Run these from the repository root:
+
+```bash
+./scripts/check.sh
+./tests/check_catalog.sh
+(cd assets && sha256sum -c SHA256SUMS)
+gjs -m tests/model.test.js
+RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
+./tests/ui_contract.sh
+./tests/service_contract.sh
+./tests/integration.sh
+```
+
+`tests/mixer.test.js` is intentionally a long-running regression test. It
+waits past the 25.7-second `storm.ogg` file and checks recovery in both a
+file-only mix and a file-plus-live-noise mix. `tests/integration.sh` creates a
+temporary D-Bus session and may require a normal user session rather than a
+restricted sandbox.
+
+## Recent audio recovery history
+
+The current recovery behavior was introduced in these local commits:
+
+- `c9e0a51` — recover mixed playback after end of stream.
+- `5001abf` — cover mixed live-source looping with a regression test.
+- `808074b` — keep the backend responsive during audio recovery.
+
+When debugging a future regression, first check whether a GStreamer bus
+callback is performing synchronous state work and whether commands sent to the
+Unix socket still receive responses.
