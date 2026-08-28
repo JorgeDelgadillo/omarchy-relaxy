@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${RELAXY_INTEGRATION_DBUS:-0}" != "1" ]] && command -v dbus-run-session >/dev/null 2>&1; then
+  RELAXY_INTEGRATION_DBUS=1 exec dbus-run-session -- "$0" "$@"
+fi
+
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/relaxy-integration.XXXXXX")"
 socket_path="$runtime_dir/backend.sock"
@@ -52,6 +56,17 @@ jq -e '.ok == true and (.state.customSounds | length) == 1' <<<"$response" >/dev
 custom_id="$(jq -r '.state.customSounds[0].id' <<<"$response")"
 response="$(command_response "{\"id\":\"integration-hide\",\"action\":\"set-hide-inactive\",\"payload\":{\"value\":true}}")"
 jq -e '.ok == true and .state.presets[1].hideInactive == true' <<<"$response" >/dev/null
+
+response="$(command_response '{"id":"integration-sound","action":"set-sound-volume","payload":{"soundId":"rain","volume":0.2}}')"
+jq -e '.ok == true and .state.presets[1].volumes.rain == 0.2 and .state.presets[1].mutes.rain == false' <<<"$response" >/dev/null
+sleep 0.5
+if rg -q 'Attempting to call back into JSAPI|reason not-linked|Could not create the Relaxy audio pipeline' "$runtime_dir/backend.log"; then
+  sed -n '1,160p' "$runtime_dir/backend.log"
+  exit 1
+fi
+
+response="$(command_response '{"id":"integration-reset","action":"reset-volumes","payload":{}}')"
+jq -e '.ok == true and (.state.presets[1].volumes | length) == 0 and (.state.presets[1].mutes | length) == 0' <<<"$response" >/dev/null
 
 response="$(get_state)"
 jq -e --arg custom_id "$custom_id" '.state.masterVolume == 0.35 and .state.customSounds[0].id == $custom_id and .state.presets[1].hideInactive == true' <<<"$response" >/dev/null

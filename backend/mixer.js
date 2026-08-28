@@ -4,59 +4,44 @@ import Gst from "gi://Gst";
 const AUDIO_CAPS_TEXT = "audio/x-raw,format=S16LE,rate=44100,channels=2,layout=interleaved";
 const NOISE_WAVE_ENUM = { "white-noise": 5, "pink-noise": 6 };
 
-function make(factory, name = null) {
-  const element = Gst.ElementFactory.make(factory, name);
-  if (!element) throw new Error(`Could not create GStreamer element: ${factory}`);
-  return element;
-}
-
-function makeAudioSink() {
+function selectAudioSink() {
   const requested = GLib.getenv("RELAXY_AUDIO_SINK");
   const candidates = requested ? [requested] : ["pipewiresink", "autoaudiosink", "pulsesink", "alsasink"];
   for (const candidate of candidates) {
-    if (Gst.ElementFactory.find(candidate)) return make(candidate, "output");
+    if (Gst.ElementFactory.find(candidate)) return candidate;
   }
   throw new Error(`Could not find a GStreamer audio sink (tried: ${candidates.join(", ")})`);
 }
 
-function uriForPath(path) {
-  return GLib.filename_to_uri(path, null);
+function launchString(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+}
+
+function branchElementName(prefix, soundId) {
+  return `${prefix}-${String(soundId).replace(/[^A-Za-z0-9_-]/g, "-")}`;
 }
 
 export class AmbientMixer {
   constructor(onEvent = () => {}) {
     Gst.init(null);
-    this.audioCaps = Gst.Caps.from_string(AUDIO_CAPS_TEXT);
     this.onEvent = onEvent;
-    this.pipeline = Gst.Pipeline.new("relaxy");
-    this.mixer = make("audiomixer", "mixer");
-    this.convert = make("audioconvert");
-    this.resample = make("audioresample");
-    this.master = make("volume", "master-volume");
-    this.sink = makeAudioSink();
-    this.pipeline.add(this.mixer);
-    this.pipeline.add(this.convert);
-    this.pipeline.add(this.resample);
-    this.pipeline.add(this.master);
-    this.pipeline.add(this.sink);
-    if (!this.mixer.link(this.convert) || !this.convert.link(this.resample) || !this.resample.link(this.master) || !this.master.link(this.sink)) {
-      throw new Error("Could not link the main audio pipeline");
-    }
+    this.audioSinkFactory = selectAudioSink();
+    this.pipeline = null;
+    this.mixer = null;
+    this.master = null;
+    this.sink = null;
+    this.bus = null;
     this.branches = new Map();
+    this.failedSounds = new Set();
+    this.topologyKey = "";
+    this.lastSpecs = [];
+    this.lastState = { playing: false, masterVolume: 1, presets: [{ volumes: {}, mutes: {} }] };
     this.masterVolume = 1;
     this.playing = false;
-    this.bus = this.pipeline.get_bus();
-    this.bus.add_signal_watch();
-    this.bus.connect("message", (_bus, message) => this.handleMessage(message));
   }
 
-  handleMessage(message) {
-    if (message.type === Gst.MessageType.ERROR) {
-      const [, error, debug] = message.parse_error();
-      const branch = [...this.branches.values()].find((item) => this.isOwnedBy(message.src, item.bin));
-      this.onEvent({ type: "error", soundId: branch?.id || null, message: error.message, debug: debug || "" });
-      if (branch) this.removeSound(branch.id);
-    }
+  errorMessage(error) {
+    return error?.message || String(error);
   }
 
   isOwnedBy(element, owner) {
@@ -68,114 +53,175 @@ export class AmbientMixer {
     return false;
   }
 
-  createBranch(spec) {
-    const bin = Gst.Bin.new(`sound-${spec.id}`);
-    const convert = make("audioconvert");
-    const resample = make("audioresample");
-    const caps = make("capsfilter");
-    const volume = make("volume");
-    caps.set_property("caps", this.audioCaps);
-    for (const element of [convert, resample, caps, volume]) bin.add(element);
-    if (!convert.link(resample) || !resample.link(caps) || !caps.link(volume)) throw new Error(`Could not link sound ${spec.id}`);
-
-    if (spec.type === "noise") {
-      const source = make("audiotestsrc");
-      source.set_property("is-live", true);
-      source.set_property("wave", NOISE_WAVE_ENUM[spec.wave] ?? NOISE_WAVE_ENUM["white-noise"]);
-      bin.add(source);
-      if (!source.link(convert)) throw new Error(`Could not link noise ${spec.id}`);
-    } else {
-      const decoder = make("uridecodebin");
-      decoder.set_property("uri", uriForPath(spec.path));
-      decoder.connect("pad-added", (_decoder, pad) => {
-        const capsOnPad = pad.get_current_caps() || pad.query_caps(null);
-        const structure = capsOnPad?.get_structure(0);
-        const name = structure?.get_name() || "";
-        if (name.startsWith("audio/")) pad.link(convert.get_static_pad("sink"));
-      });
-      bin.add(decoder);
-      decoder.connect("pad-added", (_decoder, pad) => {
-        pad.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, (_pad, info) => {
-          const event = info.get_event();
-          if (event.type === Gst.EventType.EOS || event.type === Gst.EventType.SEGMENT_DONE) {
-            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-              if (this.branches.has(spec.id)) decoder.seek_simple(Gst.Format.TIME, Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT, 0);
-              return GLib.SOURCE_REMOVE;
-            });
-            return Gst.PadProbeReturn.DROP;
-          }
-          return Gst.PadProbeReturn.OK;
-        });
-      });
+  handleMessage(message) {
+    if (message.type === Gst.MessageType.ERROR) {
+      const [, error, debug] = message.parse_error();
+      const branch = [...this.branches.values()].find((item) => this.isOwnedBy(message.src, item.source || item.volume));
+      const event = {
+        type: "error",
+        soundId: branch?.id || null,
+        message: this.errorMessage(error),
+        debug: debug || "",
+      };
+      this.onEvent(event);
+      if (branch) {
+        this.failedSounds.add(branch.id);
+        this.rebuildPipeline();
+      }
+    } else if (message.type === Gst.MessageType.EOS) {
+      let replayed = false;
+      for (const branch of this.branches.values()) {
+        if (!branch.source) continue;
+        try {
+          replayed = branch.source.seek_simple(
+            Gst.Format.TIME,
+            Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+            0,
+          ) || replayed;
+        } catch (error) {
+          this.onEvent({ type: "error", soundId: branch.id, message: this.errorMessage(error), debug: "" });
+        }
+      }
+      if (replayed) this.syncPipeline();
     }
-
-    const sourcePad = volume.get_static_pad("src");
-    bin.add_pad(Gst.GhostPad.new("src", sourcePad));
-    return { bin, volume };
   }
 
-  addSound(spec, level) {
-    if (this.branches.has(spec.id)) {
-      this.branches.get(spec.id).volume.set_property("volume", level);
+  branchDescription(spec) {
+    const volumeName = branchElementName("volume", spec.id);
+    if (spec.type === "noise") {
+      const wave = NOISE_WAVE_ENUM[spec.wave] ?? NOISE_WAVE_ENUM["white-noise"];
+      return `audiotestsrc is-live=true wave=${wave} ! audioconvert ! audioresample ! capsfilter caps=${AUDIO_CAPS_TEXT} ! volume name=${volumeName} ! mixer.`;
+    }
+    const sourceName = branchElementName("source", spec.id);
+    const uri = launchString(GLib.filename_to_uri(spec.path, null));
+    return `uridecodebin name=${sourceName} uri="${uri}" ! audioconvert ! audioresample ! capsfilter caps=${AUDIO_CAPS_TEXT} ! volume name=${volumeName} ! mixer.`;
+  }
+
+  pipelineDescription(specs) {
+    const output = [
+      "audiomixer name=mixer",
+      "! audioconvert",
+      "! audioresample",
+      "! volume name=master-volume",
+      `! ${this.audioSinkFactory} name=output`,
+    ].join(" ");
+    return [output, ...specs.map((spec) => this.branchDescription(spec))].join(" ");
+  }
+
+  topologyFor(specs) {
+    return JSON.stringify(specs.map((spec) => ({
+      id: spec.id,
+      type: spec.type,
+      path: spec.path || "",
+      wave: spec.wave || "",
+    })));
+  }
+
+  disposePipeline() {
+    if (!this.pipeline) return;
+    if (this.bus) this.bus.remove_signal_watch();
+    this.pipeline.set_state(Gst.State.NULL);
+    this.pipeline = null;
+    this.mixer = null;
+    this.master = null;
+    this.sink = null;
+    this.bus = null;
+    this.branches = new Map();
+  }
+
+  installPipeline(specs) {
+    this.disposePipeline();
+    if (specs.length === 0) {
+      this.topologyKey = this.topologyFor(specs);
       return;
     }
-    try {
-      const branch = this.createBranch(spec);
-      this.pipeline.add(branch.bin);
-      const mixerPad = this.mixer.get_request_pad("sink_%u");
-      const sourcePad = branch.bin.get_static_pad("src");
-      if (!mixerPad || !sourcePad || sourcePad.link(mixerPad) !== Gst.PadLinkReturn.OK) throw new Error(`Could not attach sound ${spec.id}`);
-      branch.bin.set_state(this.playing ? Gst.State.PLAYING : Gst.State.PAUSED);
-      branch.volume.set_property("volume", level);
-      this.branches.set(spec.id, { id: spec.id, bin: branch.bin, volume: branch.volume, mixerPad });
-      this.syncPipeline();
-      this.onEvent({ type: "sound-ready", soundId: spec.id });
-    } catch (error) {
-      this.onEvent({ type: "error", soundId: spec.id, message: error.message, debug: "" });
-    }
-  }
 
-  removeSound(soundId) {
-    const branch = this.branches.get(soundId);
-    if (!branch) return;
-    branch.bin.set_state(Gst.State.NULL);
-    const sourcePad = branch.bin.get_static_pad("src");
-    if (sourcePad && branch.mixerPad) sourcePad.unlink(branch.mixerPad);
-    if (branch.mixerPad) this.mixer.release_request_pad(branch.mixerPad);
-    this.pipeline.remove(branch.bin);
-    this.branches.delete(soundId);
+    const pipeline = Gst.parse_launch(this.pipelineDescription(specs));
+    if (!pipeline) throw new Error("Could not create the Relaxy audio pipeline");
+    const mixer = pipeline.get_by_name("mixer");
+    const master = pipeline.get_by_name("master-volume");
+    const sink = pipeline.get_by_name("output");
+    if (!mixer || !master || !sink) throw new Error("Could not inspect the Relaxy audio pipeline");
+
+    this.pipeline = pipeline;
+    this.mixer = mixer;
+    this.master = master;
+    this.sink = sink;
+    this.bus = pipeline.get_bus();
+    this.bus.add_signal_watch();
+    this.bus.connect("message", (_bus, message) => this.handleMessage(message));
+    this.topologyKey = this.topologyFor(specs);
+
+    for (const spec of specs) {
+      const volume = pipeline.get_by_name(branchElementName("volume", spec.id));
+      if (!volume) throw new Error(`Could not inspect the ${spec.id} volume control`);
+      const source = spec.type === "noise" ? null : pipeline.get_by_name(branchElementName("source", spec.id));
+      this.branches.set(spec.id, { id: spec.id, spec, volume, source });
+    }
+    this.master.set_property("volume", this.masterVolume);
+    for (const { id, level } of specs.map((spec) => ({
+      id: spec.id,
+      level: this.levelFor(spec),
+    }))) {
+      this.branches.get(id)?.volume.set_property("volume", level);
+    }
     this.syncPipeline();
   }
 
+  levelFor(spec) {
+    const preset = this.lastState.presets.find((item) => item.id === this.lastState.activePresetId) || this.lastState.presets[0];
+    return Math.max(0, Math.min(1, Number(preset?.volumes?.[spec.id]) || 0));
+  }
+
+  rebuildPipeline() {
+    const specs = this.lastSpecs.filter((spec) => !this.failedSounds.has(spec.id));
+    try {
+      this.installPipeline(specs);
+      this.onEvent({ type: "pipeline-ready" });
+    } catch (error) {
+      this.onEvent({ type: "error", soundId: null, message: this.errorMessage(error), debug: "" });
+    }
+  }
+
   sync(specs, state) {
+    this.lastSpecs = specs;
+    this.lastState = state;
     this.masterVolume = Math.max(0, Math.min(1, Number(state.masterVolume) || 0));
-    this.master.set_property("volume", this.masterVolume);
+    this.playing = Boolean(state.playing);
+
+    const availableIds = new Set(specs.map((spec) => spec.id));
+    for (const id of this.failedSounds) if (!availableIds.has(id)) this.failedSounds.delete(id);
+
     const preset = state.presets.find((item) => item.id === state.activePresetId) || state.presets[0];
-    const desired = new Map();
+    const desired = [];
     for (const spec of specs) {
       const level = Math.max(0, Math.min(1, Number(preset.volumes[spec.id]) || 0));
       const muted = preset.mutes[spec.id] !== false;
-      if (!muted && level > 0) desired.set(spec.id, { spec, level });
+      if (!muted && level > 0 && !this.failedSounds.has(spec.id)) desired.push(spec);
     }
-    for (const id of this.branches.keys()) if (!desired.has(id)) this.removeSound(id);
-    for (const { spec, level } of desired.values()) this.addSound(spec, level);
-    this.playing = Boolean(state.playing);
+
+    const nextTopologyKey = this.topologyFor(desired);
+    if (nextTopologyKey !== this.topologyKey) {
+      try {
+        this.installPipeline(desired);
+      } catch (error) {
+        this.onEvent({ type: "error", soundId: null, message: this.errorMessage(error), debug: "" });
+      }
+    } else if (this.pipeline) {
+      this.master.set_property("volume", this.masterVolume);
+      for (const spec of desired) this.branches.get(spec.id)?.volume.set_property("volume", this.levelFor(spec));
+    }
     this.syncPipeline();
   }
 
   syncPipeline() {
+    if (!this.pipeline) return;
     const target = this.branches.size === 0 ? Gst.State.NULL : (this.playing ? Gst.State.PLAYING : Gst.State.PAUSED);
     this.pipeline.set_state(target);
   }
 
-  setPlaying(playing) {
-    this.playing = Boolean(playing);
-    this.syncPipeline();
-  }
-
   stop() {
-    for (const id of [...this.branches.keys()]) this.removeSound(id);
-    this.pipeline.set_state(Gst.State.NULL);
-    this.bus.remove_signal_watch();
+    this.disposePipeline();
+    this.topologyKey = "";
   }
 }
