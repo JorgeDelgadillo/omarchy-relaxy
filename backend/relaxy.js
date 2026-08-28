@@ -330,6 +330,7 @@ export class Backend {
       case "remove-custom-sound": this.mutate((state) => removeCustomSound(state, payload.soundId)); break;
       case "set-start-paused": this.mutate((state) => { state.startPaused = Boolean(payload.value); return state; }); break;
       case "set-inhibit-suspension": this.mutate((state) => { state.inhibitSuspension = Boolean(payload.value); return state; }); break;
+      case "set-hide-inactive": this.mutate((state) => { activePreset(state).hideInactive = Boolean(payload.value); return state; }); break;
       default: throw new Error(`Unknown action: ${action}`);
     }
     return this.state;
