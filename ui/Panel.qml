@@ -18,6 +18,8 @@ Item {
   property string pendingCommand: ""
   property string pendingAction: ""
   property var pendingPayload: ({})
+  property var pendingVolumes: ({})
+  property real pendingMasterVolume: -1
   property string editorMode: ""
   property string editorId: ""
   property string confirmAction: ""
@@ -65,10 +67,50 @@ Item {
     commandProcess.running = true;
   }
 
+  function volumeFor(soundId) {
+    return root.pendingVolumes[soundId] !== undefined
+      ? Number(root.pendingVolumes[soundId])
+      : Catalog.volume(root.mixerState, soundId);
+  }
+
+  function setMasterVolumeFromSlider(next) {
+    root.pendingMasterVolume = Number(next);
+    root.sendAction("set-master-volume", { volume: next });
+  }
+
+  function setSoundVolumeFromSlider(soundId, next) {
+    var nextPending = Object.assign({}, root.pendingVolumes);
+    nextPending[soundId] = Number(next);
+    root.pendingVolumes = nextPending;
+    root.sendAction("set-sound-volume", { soundId: soundId, volume: next });
+  }
+
+  function clearPendingVolumes() {
+    root.pendingMasterVolume = -1;
+    root.pendingVolumes = ({});
+  }
+
+  function reconcilePendingVolumes() {
+    if (root.pendingMasterVolume >= 0 && Math.abs(Number(root.mixerState.masterVolume) - root.pendingMasterVolume) < 0.001) {
+      root.pendingMasterVolume = -1;
+    }
+
+    var remaining = {};
+    for (var soundId in root.pendingVolumes) {
+      if (Math.abs(Catalog.volume(root.mixerState, soundId) - Number(root.pendingVolumes[soundId])) >= 0.001) {
+        remaining[soundId] = root.pendingVolumes[soundId];
+      }
+    }
+    root.pendingVolumes = remaining;
+  }
+
   function reloadState() {
     try {
       var parsed = JSON.parse(stateFile.text());
-      if (parsed && parsed.schemaVersion === 1) root.mixerState = parsed;
+      if (parsed && parsed.schemaVersion === 1) {
+        root.mixerState = parsed;
+        root.reconcilePendingVolumes();
+      }
     } catch (error) {
       console.warn("relaxy state: " + error);
     }
@@ -144,9 +186,25 @@ Item {
 
   Process {
     id: commandProcess
-    onExited: {
+    onExited: function(exitCode) {
+      if (exitCode !== 0) root.clearPendingVolumes();
       stateFile.reload();
       root.startPendingCommand();
+    }
+    stdout: SplitParser {
+      onRead: function(line) {
+        try {
+          var response = JSON.parse(line);
+          if (!response.ok) {
+            root.clearPendingVolumes();
+          } else if (response.state) {
+            root.mixerState = response.state;
+            root.reconcilePendingVolumes();
+          }
+        } catch (error) {
+          console.warn("relaxy response: " + error);
+        }
+      }
     }
     stderr: SplitParser {
       onRead: function(line) { console.warn("relaxy command: " + line); }
@@ -322,11 +380,14 @@ Item {
         }
       }
 
-      Row {
+      Item {
         width: parent.width
-        spacing: Style.space(8)
+        height: Style.space(42)
 
         Text {
+          anchors.left: parent.left
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
           width: Style.space(136)
           text: "Master volume"
           color: root.bar ? root.bar.foreground : "white"
@@ -338,11 +399,15 @@ Item {
         PanelSlider {
           id: masterSlider
           bar: root.bar
-          width: parent.width - Style.space(144)
+          anchors.left: parent.left
+          anchors.leftMargin: Style.space(144)
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
           minimum: 0
           maximum: 1
-          value: Number(root.mixerState.masterVolume || 0)
-          onMoved: function(next) { root.sendAction("set-master-volume", { volume: next }) }
+          value: root.pendingMasterVolume >= 0 ? root.pendingMasterVolume : Number(root.mixerState.masterVolume || 0)
+          onMoved: function(next) { root.setMasterVolumeFromSlider(next) }
         }
       }
 
@@ -384,45 +449,53 @@ Item {
                   width: soundsColumn.width
                   height: Style.space(42)
 
-                  Row {
-                    anchors.fill: parent
-                    spacing: Style.space(8)
+                  Text {
+                    id: soundIcon
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: Style.space(24)
+                    text: "󰝚"
+                    color: Catalog.isPlaying(root.mixerState, modelData.id) ? Color.accent : (root.bar ? root.bar.foreground : "white")
+                    font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+                    font.pixelSize: Style.font.icon
+                    verticalAlignment: Text.AlignVCenter
+                  }
 
-                    Text {
-                      width: Style.space(24)
-                      text: "󰝚"
-                      color: Catalog.isPlaying(root.mixerState, modelData.id) ? Color.accent : (root.bar ? root.bar.foreground : "white")
-                      font.family: root.bar ? root.bar.fontFamily : "sans-serif"
-                      font.pixelSize: Style.font.icon
-                      verticalAlignment: Text.AlignVCenter
-                    }
+                  Text {
+                    id: soundName
+                    anchors.left: soundIcon.right
+                    anchors.leftMargin: Style.space(8)
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: Style.space(104)
+                    text: modelData.title
+                    color: root.bar ? root.bar.foreground : "white"
+                    font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideRight
+                    verticalAlignment: Text.AlignVCenter
+                  }
 
-                    Text {
-                      width: Style.space(104)
-                      text: modelData.title
-                      color: root.bar ? root.bar.foreground : "white"
-                      font.family: root.bar ? root.bar.fontFamily : "sans-serif"
-                      font.pixelSize: Style.font.body
-                      elide: Text.ElideRight
-                      verticalAlignment: Text.AlignVCenter
-                    }
-
-                    PanelSlider {
-                      id: soundSlider
-                      bar: root.bar
-                      width: parent.width - Style.space(144)
-                      minimum: 0
-                      maximum: 1
-                      value: Catalog.volume(root.mixerState, modelData.id)
-                      onMoved: function(next) { root.sendAction("set-sound-volume", { soundId: modelData.id, volume: next }) }
-                    }
+                  PanelSlider {
+                    id: soundSlider
+                    bar: root.bar
+                    anchors.left: soundName.right
+                    anchors.leftMargin: Style.space(8)
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    minimum: 0
+                    maximum: 1
+                    value: root.volumeFor(modelData.id)
+                    onMoved: function(next) { root.setSoundVolumeFromSlider(modelData.id, next) }
                   }
 
                   MouseArea {
                     anchors.left: parent.left
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
-                    width: Style.space(140)
+                    width: Style.space(144)
                     onClicked: root.sendAction("toggle-sound", { soundId: modelData.id, playing: !Catalog.isPlaying(root.mixerState, modelData.id) })
                   }
                 }
@@ -450,38 +523,39 @@ Item {
                 width: soundsColumn.width
                 height: Style.space(42)
 
+                Text {
+                  id: customSoundIcon
+                  anchors.left: parent.left
+                  anchors.top: parent.top
+                  anchors.bottom: parent.bottom
+                  width: Style.space(24)
+                  text: "󰝚"
+                  color: Catalog.isPlaying(root.mixerState, modelData.id) ? Color.accent : (root.bar ? root.bar.foreground : "white")
+                  font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+                  font.pixelSize: Style.font.icon
+                  verticalAlignment: Text.AlignVCenter
+                }
+
+                Text {
+                  id: customSoundName
+                  anchors.left: customSoundIcon.right
+                  anchors.leftMargin: Style.space(8)
+                  anchors.top: parent.top
+                  anchors.bottom: parent.bottom
+                  width: Style.space(104)
+                  text: modelData.name
+                  color: root.bar ? root.bar.foreground : "white"
+                  font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+                  verticalAlignment: Text.AlignVCenter
+                }
+
                 Row {
-                  anchors.fill: parent
+                  id: customSoundActions
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
                   spacing: Style.space(8)
-
-                  Text {
-                    width: Style.space(24)
-                    text: "󰝚"
-                    color: Catalog.isPlaying(root.mixerState, modelData.id) ? Color.accent : (root.bar ? root.bar.foreground : "white")
-                    font.family: root.bar ? root.bar.fontFamily : "sans-serif"
-                    font.pixelSize: Style.font.icon
-                    verticalAlignment: Text.AlignVCenter
-                  }
-
-                  Text {
-                    width: Style.space(104)
-                    text: modelData.name
-                    color: root.bar ? root.bar.foreground : "white"
-                    font.family: root.bar ? root.bar.fontFamily : "sans-serif"
-                    font.pixelSize: Style.font.body
-                    elide: Text.ElideRight
-                    verticalAlignment: Text.AlignVCenter
-                  }
-
-                  PanelSlider {
-                    id: customSoundSlider
-                    bar: root.bar
-                    width: parent.width - Style.space(220)
-                    minimum: 0
-                    maximum: 1
-                    value: Catalog.volume(root.mixerState, modelData.id)
-                    onMoved: function(next) { root.sendAction("set-sound-volume", { soundId: modelData.id, volume: next }) }
-                  }
 
                   Button {
                     iconText: "󰏫"
@@ -498,11 +572,26 @@ Item {
                   }
                 }
 
+                PanelSlider {
+                  id: customSoundSlider
+                  bar: root.bar
+                  anchors.left: customSoundName.right
+                  anchors.leftMargin: Style.space(8)
+                  anchors.right: customSoundActions.left
+                  anchors.rightMargin: Style.space(8)
+                  anchors.top: parent.top
+                  anchors.bottom: parent.bottom
+                  minimum: 0
+                  maximum: 1
+                  value: root.volumeFor(modelData.id)
+                  onMoved: function(next) { root.setSoundVolumeFromSlider(modelData.id, next) }
+                }
+
                 MouseArea {
                   anchors.left: parent.left
                   anchors.top: parent.top
                   anchors.bottom: parent.bottom
-                  width: Style.space(140)
+                  width: Style.space(144)
                   onClicked: root.sendAction("toggle-sound", { soundId: modelData.id, playing: !Catalog.isPlaying(root.mixerState, modelData.id) })
                 }
               }
@@ -547,7 +636,10 @@ Item {
           iconText: "󰆴"
           foreground: root.bar ? root.bar.foreground : "white"
           tooltipText: "Reset sound volumes"
-          onClicked: root.sendAction("reset-volumes", {})
+          onClicked: {
+            root.clearPendingVolumes();
+            root.sendAction("reset-volumes", {});
+          }
         }
 
         Button {
