@@ -1,0 +1,8 @@
+*.swp
+*.swo
+__pycache__/
+*.pyc
+.pytest_cache/
+test-state/
+test-runtime/
+

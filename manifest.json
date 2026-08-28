@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "jdelgadillo.relaxy",
+  "name": "Relaxy",
+  "version": "0.1.0",
+  "author": "jdelgadillo",
+  "description": "Ambient sound mixer for Omarchy",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Relaxy",
+    "description": "Ambient sound mixer",
+    "category": "Media",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
+
