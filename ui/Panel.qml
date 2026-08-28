@@ -61,7 +61,7 @@ Item {
       root.pendingCommand = command;
       return;
     }
-    commandProcess.command = ["gjs", root.backendPath, "--command", command, "--socket", root.socketPath];
+    commandProcess.command = ["gjs", "-m", root.backendPath, "--command", command, "--socket", root.socketPath];
     commandProcess.running = true;
   }
 
@@ -78,7 +78,7 @@ Item {
     if (root.pendingCommand === "") return;
     var command = root.pendingCommand;
     root.pendingCommand = "";
-    commandProcess.command = ["gjs", root.backendPath, "--command", command, "--socket", root.socketPath];
+    commandProcess.command = ["gjs", "-m", root.backendPath, "--command", command, "--socket", root.socketPath];
     commandProcess.running = true;
   }
 
@@ -327,6 +327,7 @@ Item {
         spacing: Style.space(8)
 
         Text {
+          width: Style.space(136)
           text: "Master volume"
           color: root.bar ? root.bar.foreground : "white"
           font.family: root.bar ? root.bar.fontFamily : "sans-serif"
@@ -334,13 +335,14 @@ Item {
           verticalAlignment: Text.AlignVCenter
         }
 
-        QQC2.Slider {
+        PanelSlider {
           id: masterSlider
-          width: parent.width - Style.space(105)
-          from: 0
-          to: 1
+          bar: root.bar
+          width: parent.width - Style.space(144)
+          minimum: 0
+          maximum: 1
           value: Number(root.mixerState.masterVolume || 0)
-          onMoved: root.sendAction("set-master-volume", { volume: value })
+          onMoved: function(next) { root.sendAction("set-master-volume", { volume: next }) }
         }
       }
 
@@ -405,22 +407,22 @@ Item {
                       verticalAlignment: Text.AlignVCenter
                     }
 
-                    QQC2.Slider {
-                      width: parent.width - Style.space(150)
-                      anchors.verticalCenter: parent.verticalCenter
-                      from: 0
-                      to: 1
+                    PanelSlider {
+                      id: soundSlider
+                      bar: root.bar
+                      width: parent.width - Style.space(144)
+                      minimum: 0
+                      maximum: 1
                       value: Catalog.volume(root.mixerState, modelData.id)
-                      onMoved: root.sendAction("set-sound-volume", { soundId: modelData.id, volume: value })
+                      onMoved: function(next) { root.sendAction("set-sound-volume", { soundId: modelData.id, volume: next }) }
                     }
                   }
 
                   MouseArea {
                     anchors.left: parent.left
-                    anchors.right: parent.right
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
-                    anchors.rightMargin: Style.space(145)
+                    width: Style.space(140)
                     onClicked: root.sendAction("toggle-sound", { soundId: modelData.id, playing: !Catalog.isPlaying(root.mixerState, modelData.id) })
                   }
                 }
@@ -450,7 +452,7 @@ Item {
 
                 Row {
                   anchors.fill: parent
-                  spacing: Style.space(6)
+                  spacing: Style.space(8)
 
                   Text {
                     width: Style.space(24)
@@ -462,7 +464,7 @@ Item {
                   }
 
                   Text {
-                    width: Style.space(100)
+                    width: Style.space(104)
                     text: modelData.name
                     color: root.bar ? root.bar.foreground : "white"
                     font.family: root.bar ? root.bar.fontFamily : "sans-serif"
@@ -471,13 +473,14 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                   }
 
-                  QQC2.Slider {
-                    width: parent.width - Style.space(232)
-                    anchors.verticalCenter: parent.verticalCenter
-                    from: 0
-                    to: 1
+                  PanelSlider {
+                    id: customSoundSlider
+                    bar: root.bar
+                    width: parent.width - Style.space(220)
+                    minimum: 0
+                    maximum: 1
                     value: Catalog.volume(root.mixerState, modelData.id)
-                    onMoved: root.sendAction("set-sound-volume", { soundId: modelData.id, volume: value })
+                    onMoved: function(next) { root.sendAction("set-sound-volume", { soundId: modelData.id, volume: next }) }
                   }
 
                   Button {
@@ -497,10 +500,9 @@ Item {
 
                 MouseArea {
                   anchors.left: parent.left
-                  anchors.right: parent.right
                   anchors.top: parent.top
                   anchors.bottom: parent.bottom
-                  anchors.rightMargin: Style.space(232)
+                  width: Style.space(140)
                   onClicked: root.sendAction("toggle-sound", { soundId: modelData.id, playing: !Catalog.isPlaying(root.mixerState, modelData.id) })
                 }
               }

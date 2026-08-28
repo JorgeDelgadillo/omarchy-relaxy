@@ -10,6 +10,12 @@ grep -q 'Repeater' "$repo_dir/ui/Panel.qml"
 grep -q 'set-sound-volume' "$repo_dir/ui/Panel.qml"
 grep -q 'toggle-sound' "$repo_dir/ui/Panel.qml"
 grep -q 'set-master-volume' "$repo_dir/ui/Panel.qml"
+grep -q 'commandProcess.command = \["gjs", "-m"' "$repo_dir/ui/Panel.qml"
+grep -q 'PanelSlider' "$repo_dir/ui/Panel.qml"
+if grep -q 'QQC2.Slider' "$repo_dir/ui/Panel.qml"; then
+  echo "Relaxy panel should use the Omarchy PanelSlider control." >&2
+  exit 1
+fi
 grep -q 'add-preset' "$repo_dir/ui/Panel.qml"
 grep -q 'rename-preset' "$repo_dir/ui/Panel.qml"
 grep -q 'remove-preset' "$repo_dir/ui/Panel.qml"
