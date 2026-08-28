@@ -104,7 +104,8 @@ export function loadState(path = statePath()) {
   try {
     const [ok, contents] = GLib.file_get_contents(path);
     if (!ok) return defaultState();
-    return normalizeState(JSON.parse(contents));
+    const text = contents instanceof Uint8Array ? new TextDecoder().decode(contents) : contents;
+    return normalizeState(JSON.parse(text));
   } catch (_error) {
     return defaultState();
   }
@@ -220,4 +221,3 @@ export function removeCustomSound(state, soundId) {
   }
   return state;
 }
-
