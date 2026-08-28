@@ -1,10 +1,136 @@
 # Relaxy
 
 Relaxy is an unofficial Omarchy shell plugin for mixing ambient sounds while
-working, focusing, or resting. It is inspired by Blanket and uses the same
-offline ambient sound catalog with independent track controls.
+working, focusing, reading, or resting. It recreates the bundled sound
+experience of [Blanket](https://github.com/rafaelmardojai/blanket) as a native
+Omarchy bar widget with a persistent GStreamer mixer.
 
-The project is currently under development. The complete installation,
-usage, attribution, and troubleshooting documentation will be added before
-the first release.
+## Features
 
+- Four sound groups: Nature, Travel, Interiors, and Noise.
+- All fourteen bundled Blanket sounds, including pink and white noise.
+- Independent volume and mute/play controls for every sound.
+- Master volume, play/pause, presets, and inactive-group filtering.
+- Custom sound files selected through the native file picker.
+- Preset and custom-sound rename/remove workflows.
+- Optional start-paused behavior and suspend inhibition.
+- Automatic pause when the system enters power-saver mode.
+- MPRIS controls for desktop media controls and keyboard media keys.
+- State persistence below `$XDG_STATE_HOME/relaxy/state.json`.
+- Automatic backend restart while the Omarchy shell remains alive.
+
+## Requirements
+
+Relaxy is designed for Omarchy 4 or newer and expects these runtime
+components, which are included by the standard Omarchy installation:
+
+- Quickshell with the Omarchy `qs.Commons` and `qs.Ui` modules.
+- GJS with GObject introspection.
+- GStreamer with `audiomixer`, `uridecodebin`, `audiotestsrc`, and the normal
+  audio output plugins.
+- A user session D-Bus for MPRIS integration.
+
+## Installation
+
+Review the repository before installing it because Omarchy plugins run as
+trusted, unsandboxed code inside the long-lived shell process.
+
+```bash
+omarchy plugin add https://example.invalid/jdelgadillo/omarchy-relaxy.git --enable
+```
+
+Replace the example URL with the repository URL where this plugin is hosted.
+The `--enable` flag adds the widget to the bar. Without it, enable the plugin
+later with:
+
+```bash
+omarchy plugin enable jdelgadillo.relaxy --section right
+```
+
+For a local checkout, validate it first and then use a local Git transport if
+your Omarchy installation permits local sources:
+
+```bash
+omarchy plugin validate /absolute/path/to/omarchy-relaxy
+omarchy plugin add file:///absolute/path/to/omarchy-relaxy --enable --yes
+```
+
+After installation, reload the shell if it does not rescan automatically:
+
+```bash
+omarchy reload
+```
+
+## Usage
+
+Click the Relaxy bar icon to open the mixer. Left and right click both toggle
+the panel, while middle click toggles playback without opening it. The panel
+contains the master control, per-sound sliders, preset controls, custom sound
+import, settings, and attribution information.
+
+Relaxy starts the bundled tracks muted at zero volume. Select a sound row to
+enable it, then adjust its volume. A preset stores the active sound levels,
+mutes, and inactive-group preference.
+
+The backend exposes `org.mpris.MediaPlayer2.Relaxy` on
+`/org/mpris/MediaPlayer2`. Desktop media controls can play, pause, stop, and
+change the master volume; next and previous move between presets.
+
+## Data and runtime paths
+
+- Bundled audio: `assets/sounds/` inside the installed plugin.
+- Persistent state: `$XDG_STATE_HOME/relaxy/state.json`, falling back to
+  `$HOME/.local/state/relaxy/state.json`.
+- Backend socket: `$XDG_RUNTIME_DIR/relaxy-$USER.sock`.
+
+The socket is local to the user and is removed when the backend exits. State
+writes use a temporary file followed by an atomic rename.
+
+## Development and validation
+
+All source code, comments, tests, and documentation in this repository are in
+English. Run the fast checks from the repository root:
+
+```bash
+./scripts/check.sh
+./tests/check_catalog.sh
+(cd assets && sha256sum -c SHA256SUMS)
+gjs -m tests/model.test.js
+RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
+./tests/ui_contract.sh
+./tests/service_contract.sh
+```
+
+Run the socket and MPRIS integration test in a session that permits temporary
+Unix sockets:
+
+```bash
+./tests/integration.sh
+```
+
+Each planned implementation step is represented by its own local Git commit.
+This project intentionally does not push commits or require a remote.
+
+## Attribution and licenses
+
+The bundled audio catalog is derived from Blanket commit
+`59c6665f9405f7b58df9b8a47fda431653c1696d`. Individual sound licenses and
+attributions are recorded in
+[`assets/SOUNDS_LICENSES.md`](assets/SOUNDS_LICENSES.md), and checksums are in
+[`assets/SHA256SUMS`](assets/SHA256SUMS).
+
+The plugin implementation is licensed under GPL-3.0-or-later. See
+[`LICENSE`](LICENSE) for the full license text. Blanket remains the original
+upstream project and its own licensing terms apply to its source and assets.
+
+## Troubleshooting
+
+If the icon is absent, verify that the plugin is enabled and that its entry is
+present in the bar layout. If playback is silent, check that GStreamer can
+load an audio sink and that another application has not claimed an exclusive
+device. Run the integration test with `RELAXY_AUDIO_SINK=fakesink` to isolate
+the mixer from the physical audio device.
+
+Backend diagnostics are written to the Omarchy shell log. The backend reports
+missing or unreadable custom files as sound-specific errors and keeps the
+remaining tracks available.

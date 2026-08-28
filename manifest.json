@@ -4,6 +4,7 @@
   "name": "Relaxy",
   "version": "0.1.0",
   "author": "jdelgadillo",
+  "license": "GPL-3.0-or-later",
   "description": "Ambient sound mixer for Omarchy",
   "kinds": [
     "service",
@@ -22,4 +23,3 @@
     "defaultSection": "right"
   }
 }
-
