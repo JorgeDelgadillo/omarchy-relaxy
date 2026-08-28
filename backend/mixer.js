@@ -73,20 +73,20 @@ export class AmbientMixer {
       // are applied. Reapply levels once the pipeline has completed preroll.
       this.applyVolumes();
     } else if (message.type === Gst.MessageType.EOS) {
-      let replayed = false;
-      for (const branch of this.branches.values()) {
-        if (!branch.source) continue;
-        try {
-          replayed = branch.source.seek_simple(
-            Gst.Format.TIME,
-            Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
-            0,
-          ) || replayed;
-        } catch (error) {
-          this.onEvent({ type: "error", soundId: branch.id, message: this.errorMessage(error), debug: "" });
-        }
+      // A mixed pipeline can post EOS while one branch is still active. The
+      // pipeline-level seek resets all file branches consistently, then the
+      // requested pipeline state is restored explicitly.
+      try {
+        this.pipeline.set_state(Gst.State.PAUSED);
+        this.pipeline.seek_simple(
+          Gst.Format.TIME,
+          Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+          0,
+        );
+      } catch (error) {
+        this.onEvent({ type: "error", soundId: null, message: this.errorMessage(error), debug: "" });
       }
-      if (replayed) this.syncPipeline();
+      this.syncPipeline();
     }
   }
 
