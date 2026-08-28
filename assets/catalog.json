@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "project": "Blanket",
+    "repository": "https://github.com/rafaelmardojai/blanket",
+    "commit": "59c6665f9405f7b58df9b8a47fda431653c1696d"
+  },
+  "groups": [
+    {
+      "id": "nature",
+      "title": "Nature",
+      "sounds": ["rain", "storm", "wind", "waves", "stream", "birds", "summer-night"]
+    },
+    {
+      "id": "travel",
+      "title": "Travel",
+      "sounds": ["train", "boat", "city"]
+    },
+    {
+      "id": "interiors",
+      "title": "Interiors",
+      "sounds": ["coffee-shop", "fireplace"]
+    },
+    {
+      "id": "noise",
+      "title": "Noise",
+      "sounds": ["pink-noise", "white-noise"]
+    }
+  ],
+  "sounds": [
+    {"id": "rain", "title": "Rain", "type": "file", "file": "rain.ogg"},
+    {"id": "storm", "title": "Storm", "type": "file", "file": "storm.ogg"},
+    {"id": "wind", "title": "Wind", "type": "file", "file": "wind.ogg"},
+    {"id": "waves", "title": "Waves", "type": "file", "file": "waves.ogg"},
+    {"id": "stream", "title": "Stream", "type": "file", "file": "stream.ogg"},
+    {"id": "birds", "title": "Birds", "type": "file", "file": "birds.ogg"},
+    {"id": "summer-night", "title": "Summer Night", "type": "file", "file": "summer-night.ogg"},
+    {"id": "train", "title": "Train", "type": "file", "file": "train.ogg"},
+    {"id": "boat", "title": "Boat", "type": "file", "file": "boat.ogg"},
+    {"id": "city", "title": "City", "type": "file", "file": "city.ogg"},
+    {"id": "coffee-shop", "title": "Coffee Shop", "type": "file", "file": "coffee-shop.ogg"},
+    {"id": "fireplace", "title": "Fireplace", "type": "file", "file": "fireplace.ogg"},
+    {"id": "pink-noise", "title": "Pink Noise", "type": "noise", "wave": "pink-noise"},
+    {"id": "white-noise", "title": "White Noise", "type": "noise", "wave": "white-noise"}
+  ]
+}
+
