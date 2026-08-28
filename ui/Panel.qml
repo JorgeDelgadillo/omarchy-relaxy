@@ -175,7 +175,7 @@ Item {
         id: editorField
         width: parent.width
         foreground: root.bar ? root.bar.foreground : "white"
-        accent: root.bar ? root.bar.accent : "#9cc9ff"
+        accent: Color.accent
         onAccepted: root.submitEditor()
       }
     }
@@ -369,7 +369,7 @@ Item {
 
               Text {
                 text: modelData.title
-                color: root.bar ? root.bar.accent : "#9cc9ff"
+                color: Color.accent
                 font.family: root.bar ? root.bar.fontFamily : "sans-serif"
                 font.pixelSize: Style.font.caption
                 font.bold: true
@@ -389,7 +389,7 @@ Item {
                     Text {
                       width: Style.space(24)
                       text: "󰝚"
-                      color: Catalog.isPlaying(root.mixerState, modelData.id) ? (root.bar ? root.bar.accent : "#9cc9ff") : (root.bar ? root.bar.foreground : "white")
+                      color: Catalog.isPlaying(root.mixerState, modelData.id) ? Color.accent : (root.bar ? root.bar.foreground : "white")
                       font.family: root.bar ? root.bar.fontFamily : "sans-serif"
                       font.pixelSize: Style.font.icon
                       verticalAlignment: Text.AlignVCenter
@@ -435,7 +435,7 @@ Item {
 
             Text {
               text: "Custom sounds"
-              color: root.bar ? root.bar.accent : "#9cc9ff"
+              color: Color.accent
               font.family: root.bar ? root.bar.fontFamily : "sans-serif"
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -455,7 +455,7 @@ Item {
                   Text {
                     width: Style.space(24)
                     text: "󰝚"
-                    color: Catalog.isPlaying(root.mixerState, modelData.id) ? (root.bar ? root.bar.accent : "#9cc9ff") : (root.bar ? root.bar.foreground : "white")
+                    color: Catalog.isPlaying(root.mixerState, modelData.id) ? Color.accent : (root.bar ? root.bar.foreground : "white")
                     font.family: root.bar ? root.bar.fontFamily : "sans-serif"
                     font.pixelSize: Style.font.icon
                     verticalAlignment: Text.AlignVCenter

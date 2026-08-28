@@ -10,6 +10,15 @@ function make(factory, name = null) {
   return element;
 }
 
+function makeAudioSink() {
+  const requested = GLib.getenv("RELAXY_AUDIO_SINK");
+  const candidates = requested ? [requested] : ["pipewiresink", "autoaudiosink", "pulsesink", "alsasink"];
+  for (const candidate of candidates) {
+    if (Gst.ElementFactory.find(candidate)) return make(candidate, "output");
+  }
+  throw new Error(`Could not find a GStreamer audio sink (tried: ${candidates.join(", ")})`);
+}
+
 function uriForPath(path) {
   return GLib.filename_to_uri(path, null);
 }
@@ -24,7 +33,7 @@ export class AmbientMixer {
     this.convert = make("audioconvert");
     this.resample = make("audioresample");
     this.master = make("volume", "master-volume");
-    this.sink = make(GLib.getenv("RELAXY_AUDIO_SINK") || "autoaudiosink", "output");
+    this.sink = makeAudioSink();
     this.pipeline.add(this.mixer);
     this.pipeline.add(this.convert);
     this.pipeline.add(this.resample);
