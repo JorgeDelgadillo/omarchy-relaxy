@@ -2,6 +2,7 @@ import GLib from "gi://GLib";
 import Gst from "gi://Gst";
 
 const AUDIO_CAPS_TEXT = "audio/x-raw,format=S16LE,rate=44100,channels=2,layout=interleaved";
+const NOISE_WAVE_ENUM = { "white-noise": 5, "pink-noise": 6 };
 
 function make(factory, name = null) {
   const element = Gst.ElementFactory.make(factory, name);
@@ -71,7 +72,7 @@ export class AmbientMixer {
     if (spec.type === "noise") {
       const source = make("audiotestsrc");
       source.set_property("is-live", true);
-      source.set_property("wave", spec.wave);
+      source.set_property("wave", NOISE_WAVE_ENUM[spec.wave] ?? NOISE_WAVE_ENUM["white-noise"]);
       bin.add(source);
       if (!source.link(convert)) throw new Error(`Could not link noise ${spec.id}`);
     } else {
