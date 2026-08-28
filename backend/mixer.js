@@ -68,6 +68,10 @@ export class AmbientMixer {
         this.failedSounds.add(branch.id);
         this.rebuildPipeline();
       }
+    } else if (message.type === Gst.MessageType.ASYNC_DONE) {
+      // Dynamic file decoders can finish linking after the initial properties
+      // are applied. Reapply levels once the pipeline has completed preroll.
+      this.applyVolumes();
     } else if (message.type === Gst.MessageType.EOS) {
       let replayed = false;
       for (const branch of this.branches.values()) {
@@ -83,6 +87,14 @@ export class AmbientMixer {
         }
       }
       if (replayed) this.syncPipeline();
+    }
+  }
+
+  applyVolumes() {
+    if (!this.pipeline) return;
+    this.master.set_property("volume", this.masterVolume);
+    for (const branch of this.branches.values()) {
+      branch.volume.set_property("volume", this.levelFor(branch.spec));
     }
   }
 
@@ -158,13 +170,7 @@ export class AmbientMixer {
       const source = spec.type === "noise" ? null : pipeline.get_by_name(branchElementName("source", spec.id));
       this.branches.set(spec.id, { id: spec.id, spec, volume, source });
     }
-    this.master.set_property("volume", this.masterVolume);
-    for (const { id, level } of specs.map((spec) => ({
-      id: spec.id,
-      level: this.levelFor(spec),
-    }))) {
-      this.branches.get(id)?.volume.set_property("volume", level);
-    }
+    this.applyVolumes();
     this.syncPipeline();
   }
 
@@ -208,8 +214,7 @@ export class AmbientMixer {
         this.onEvent({ type: "error", soundId: null, message: this.errorMessage(error), debug: "" });
       }
     } else if (this.pipeline) {
-      this.master.set_property("volume", this.masterVolume);
-      for (const spec of desired) this.branches.get(spec.id)?.volume.set_property("volume", this.levelFor(spec));
+      this.applyVolumes();
     }
     this.syncPipeline();
   }
