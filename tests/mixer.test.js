@@ -63,6 +63,26 @@ const [, stormState] = mixer.pipeline.get_state(0);
 if (eosCount === 0) throw new Error("Storm test did not reach EOS");
 if (renderedAfterLoop <= renderedBeforeLoop) throw new Error("Storm pipeline did not render audio after EOS");
 if (stormState !== Gst.State.PLAYING) throw new Error(`Storm pipeline did not resume PLAYING: ${stormState}`);
+
+const liveMixState = {
+  playing: true,
+  masterVolume: 1,
+  activePresetId: "default",
+  presets: [{ id: "default", volumes: { "pink-noise": 0.2, storm: 0.2 }, mutes: { "pink-noise": false, storm: false } }],
+};
+mixer.sync([
+  { id: "pink-noise", type: "noise", wave: "pink-noise" },
+  { id: "storm", type: "file", path: stormPath },
+], liveMixState);
+const liveStormBranch = mixer.branches.get("storm");
+if (!liveStormBranch || !liveStormBranch.source) throw new Error("Live storm branch was not attached");
+mixer.pipeline.seek_simple(Gst.Format.TIME, Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT, 23 * Gst.SECOND);
+GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => { loop.quit(); return GLib.SOURCE_REMOVE; });
+loop.run();
+const positionQuery = Gst.Query.new_position(Gst.Format.TIME);
+if (!liveStormBranch.source.query(positionQuery)) throw new Error("Could not query live storm position");
+const [, liveStormPosition] = positionQuery.parse_position();
+if (liveStormPosition >= 8 * Gst.SECOND) throw new Error(`Live storm branch did not loop: ${liveStormPosition}`);
 } finally {
   mixer.stop();
 }
