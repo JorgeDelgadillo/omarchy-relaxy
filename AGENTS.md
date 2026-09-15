@@ -59,6 +59,11 @@ with pad probes: GJS callbacks are not safe to run from GStreamer streaming
 threads and crash the process. Cancel the watcher together with the recovery
 source when disposing the pipeline.
 
+Error recovery follows the same deferral rule: `handleMessage()` only marks the
+branch as failed and schedules `scheduleErrorRecovery()`. A failed sound stays
+out of automatic EOS recovery until an explicit user action clears it through
+`clearFailure()`, which avoids retry loops for permanently broken files.
+
 ## Validation commands
 
 Run these from the repository root:
@@ -89,6 +94,9 @@ The current recovery behavior was introduced in these local commits:
 - `5001abf` — cover mixed live-source looping with a regression test.
 - `808074b` — keep the backend responsive during audio recovery.
 - `21e209d` — recycle finite files mixed with other sounds.
+- `8724a15` — defer mixer error recovery and allow sound retries.
+- `d040983` — surface backend sound errors in the shell and panel.
+- `c46fb8c` — check catalog parity across JSON, backend, and UI.
 
 When debugging a future regression, first check whether a GStreamer bus
 callback is performing synchronous state work and whether commands sent to the

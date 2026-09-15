@@ -13,4 +13,9 @@
   recovery path required by PipeWire playback.
 - Fixed finite sounds stopping silently when mixed with other active sounds;
   branch end detection now avoids streaming-thread callbacks.
+- Fixed error-driven pipeline rebuilds to run outside the GStreamer bus
+  callback; failed sounds are retried after an explicit user action.
+- Added panel error reporting backed by a runtime status file and shell-log
+  diagnostics.
+- Added a catalog parity check across the JSON, backend, and UI definitions.
 - Added regression coverage for file-only and file-plus-live-noise mixes.

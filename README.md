@@ -16,6 +16,7 @@ Omarchy bar widget with a persistent GStreamer mixer.
 - Optional start-paused behavior and suspend inhibition.
 - Automatic pause when the system enters power-saver mode.
 - MPRIS controls for desktop media controls and keyboard media keys.
+- Sound errors reported in the panel and the shell log.
 - State persistence below `$XDG_STATE_HOME/relaxy/state.json`.
 - Automatic backend restart while the Omarchy shell remains alive.
 
@@ -81,9 +82,11 @@ change the master volume; next and previous move between presets.
 - Persistent state: `$XDG_STATE_HOME/relaxy/state.json`, falling back to
   `$HOME/.local/state/relaxy/state.json`.
 - Backend socket: `$XDG_RUNTIME_DIR/relaxy-$USER.sock`.
+- Runtime status: `$XDG_RUNTIME_DIR/relaxy-$USER.status.json`.
 
-The socket is local to the user and is removed when the backend exits. State
-writes use a temporary file followed by an atomic rename.
+The socket and the status file are local to the user and are removed when the
+backend exits. State and status writes use a temporary file followed by an
+atomic rename.
 
 ## Development and validation
 
@@ -102,8 +105,10 @@ RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
 
 The mixer regression test generates a short OGG file and verifies that a
 finite sound is recycled in a single-file mix, alongside a bundled recording,
-and alongside live noise. It runs in a few seconds and does not depend on the
-duration of the bundled tracks.
+and alongside live noise. It also covers branch failures and explicit retries.
+It runs in a few seconds and does not depend on the duration of the bundled
+tracks. The catalog check also compares `assets/catalog.json` with the backend
+and panel sound definitions.
 
 Run the socket and MPRIS integration test in a session that permits temporary
 Unix sockets:
@@ -143,4 +148,5 @@ the user's presets and volumes is intentional.
 
 Backend diagnostics are written to the Omarchy shell log. The backend reports
 missing or unreadable custom files as sound-specific errors and keeps the
-remaining tracks available.
+remaining tracks available. The panel shows the last error with a dismiss
+button, and touching the affected sound retries it.

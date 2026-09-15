@@ -39,7 +39,15 @@ clients about state changes and sound errors.
 
 Supported action families include playback (`play`, `pause`, `stop`, and
 `toggle-playing`), volume changes, sound toggling, preset selection and
-management, custom sound management, and playback preferences.
+management, custom sound management, playback preferences, and `dismiss-error`
+for the last reported sound error.
+
+The backend writes `$XDG_RUNTIME_DIR/relaxy-$USER.status.json`, derived from
+the socket path, with the last mixer error (`soundId`, `message`, `debug`, and
+`at`) or `null`. The panel watches that file and shows a dismissible warning,
+which keeps error reporting out of the persistent state document. Errors are
+also printed to standard error, where `Service.qml` forwards them to the shell
+log.
 
 ## Audio mixer
 
@@ -52,9 +60,13 @@ unmuted tracks with a positive volume, which keeps idle playback inexpensive.
 The master volume is applied after the mixer. Playback state maps to pipeline
 `PLAYING` or `PAUSED`, while an empty mixer returns the pipeline to `NULL`.
 GStreamer errors are associated with their sound id and remove only the bad
-branch so another track can continue playing. The power-profile monitor pauses
-active playback when the system enters power-saver mode and leaves it paused
-until the user starts playback again.
+branch so another track can continue playing. The error rebuild is scheduled on
+the GLib main loop for the same reason as EOS recovery: tearing down the
+pipeline can wait for streaming work inside a PipeWire sink. A failed sound is
+remembered so automatic recovery does not retry it forever; an explicit user
+action on that sound clears the failure and retries it. The power-profile
+monitor pauses active playback when the system enters power-saver mode and
+leaves it paused until the user starts playback again.
 
 When a mixed pipeline posts `EOS`, the mixer schedules recovery on the GLib
 main loop and rebuilds the current active topology from the beginning. The
@@ -98,10 +110,13 @@ sound mixer. `Raise` asks Omarchy to summon the widget when available.
 - Shell-facing QML is checked with the Omarchy plugin validator, a QML parser,
   and focused UI/service contract checks.
 - State transformations are covered by `tests/model.test.js`.
-- GStreamer branch creation and end-of-stream recovery are covered by
-  `tests/mixer.test.js` with a fake sink. The test covers file-only mixes and a
-  file mixed with a live noise source, and intentionally runs past the
-  25-second `storm.ogg` recording.
-- The Unix socket protocol, persistence, custom sounds, and MPRIS controls are
-  exercised by `tests/integration.sh`.
-- Audio binaries are verified against `assets/SHA256SUMS`.
+- GStreamer branch creation, end-of-stream recovery, and error handling are
+  covered by `tests/mixer.test.js` with a clock-synced fake sink. The test
+  generates a short OGG file, so it covers single-file mixes, a file mixed with
+  a bundled recording, a file mixed with live noise, and retries after a branch
+  failure without waiting for the bundled track durations.
+- The Unix socket protocol, persistence, custom sounds, status reporting, and
+  MPRIS controls are exercised by `tests/integration.sh`.
+- Audio binaries are verified against `assets/SHA256SUMS`, and the JSON,
+  backend, and UI catalog definitions are checked for parity by
+  `tests/catalog_parity.test.js`.
