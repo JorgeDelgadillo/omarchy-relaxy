@@ -14,5 +14,7 @@ while IFS= read -r file; do
   test -f "$repo_dir/assets/sounds/$file"
 done < <(jq -r '.sounds[] | select(.type == "file") | .file' "$catalog")
 
+gjs -m "$repo_dir/tests/catalog_parity.test.js"
+
 echo "Sound catalog is complete."
 
