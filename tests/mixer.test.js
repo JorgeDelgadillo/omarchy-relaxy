@@ -168,6 +168,43 @@ try {
     fail("File plus live noise did not recycle the ended branch");
   }
   assertRecovered("file plus live noise", baseIndex, previousPipeline, "short");
+
+  // A broken branch is reported once and removed from the mix. Automatic
+  // recovery must not retry it, but an explicit user action must.
+  const brokenPath = GLib.build_filenamev([tempDirectory, "missing.ogg"]);
+  baseIndex = events.length;
+  mixer.sync([
+    { id: "short", type: "file", path: shortPath },
+    { id: "broken", type: "file", path: brokenPath },
+  ], stateWith({ short: 0.2, broken: 0.2 }));
+  syncSink();
+  if (!waitUntil(() => events.slice(baseIndex).some((event) => event.type === "error" && event.soundId === "broken"), 10)) {
+    fail("Broken branch did not report an error");
+  }
+  if (!mixer.failedSounds.has("broken")) fail("Broken branch was not marked as failed");
+  if (!waitUntil(() => !mixer.branches.has("broken") && mixer.branches.has("short"), 5)) {
+    fail("Broken branch was not removed while the healthy branch remained");
+  }
+
+  const failuresBeforeRecovery = events.slice(baseIndex).filter((event) => event.type === "error").length;
+  if (!waitUntil(() => events.slice(baseIndex).filter((event) => event.type === "pipeline-ready").length >= 2, 10)) {
+    fail("Mix with a failed branch did not recover");
+  }
+  if (mixer.branches.has("broken")) fail("Recovery retried a failed branch without user action");
+  if (events.slice(baseIndex).filter((event) => event.type === "error").length !== failuresBeforeRecovery) {
+    fail("Recovery reported the broken branch again");
+  }
+
+  mixer.clearFailure("broken");
+  baseIndex = events.length;
+  mixer.sync([
+    { id: "short", type: "file", path: shortPath },
+    { id: "broken", type: "file", path: brokenPath },
+  ], stateWith({ short: 0.2, broken: 0.2 }));
+  syncSink();
+  if (!waitUntil(() => events.slice(baseIndex).some((event) => event.type === "error" && event.soundId === "broken"), 10)) {
+    fail("Cleared failure was not retried");
+  }
 } finally {
   mixer.stop();
   GLib.unlink(shortPath);

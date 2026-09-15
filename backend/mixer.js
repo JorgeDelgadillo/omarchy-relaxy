@@ -39,6 +39,7 @@ export class AmbientMixer {
     this.topologyKey = "";
     this.activeSpecs = [];
     this.eosRecoverySource = 0;
+    this.errorRecoverySource = 0;
     this.endWatchSource = 0;
     this.branchProgress = new Map();
     this.lastSpecs = [];
@@ -73,7 +74,7 @@ export class AmbientMixer {
       this.onEvent(event);
       if (branch) {
         this.failedSounds.add(branch.id);
-        this.rebuildPipeline();
+        this.scheduleErrorRecovery();
       }
     } else if (message.type === Gst.MessageType.ASYNC_DONE) {
       // Dynamic file decoders can finish linking after the initial properties
@@ -94,14 +95,33 @@ export class AmbientMixer {
       if (this.pipeline !== eosPipeline || this.activeSpecs.length === 0) return GLib.SOURCE_REMOVE;
       try {
         // Rebuilding the active topology is reliable for both file-only mixes
-        // and mixes that also contain live noise sources.
-        this.installPipeline([...this.activeSpecs]);
+        // and mixes that also contain live noise sources. Sounds that already
+        // failed are excluded so recovery does not retry them on its own.
+        const specs = this.activeSpecs.filter((spec) => !this.failedSounds.has(spec.id));
+        this.installPipeline(specs);
         this.onEvent({ type: "pipeline-ready" });
       } catch (error) {
         this.onEvent({ type: "error", soundId: null, message: this.errorMessage(error), debug: "" });
       }
       return GLib.SOURCE_REMOVE;
     });
+  }
+
+  scheduleErrorRecovery() {
+    if (this.errorRecoverySource || !this.pipeline) return;
+    const errorPipeline = this.pipeline;
+    this.errorRecoverySource = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      this.errorRecoverySource = 0;
+      if (this.pipeline !== errorPipeline) return GLib.SOURCE_REMOVE;
+      // Deferred out of the bus callback for the same reason as EOS recovery:
+      // rebuilding waits for streaming work and can stall a PipeWire sink.
+      this.rebuildPipeline();
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
+  clearFailure(soundId) {
+    this.failedSounds.delete(soundId);
   }
 
   applyVolumes() {
@@ -147,6 +167,10 @@ export class AmbientMixer {
     if (this.eosRecoverySource) {
       GLib.source_remove(this.eosRecoverySource);
       this.eosRecoverySource = 0;
+    }
+    if (this.errorRecoverySource) {
+      GLib.source_remove(this.errorRecoverySource);
+      this.errorRecoverySource = 0;
     }
     this.stopEndWatch();
     if (!this.pipeline) return;
