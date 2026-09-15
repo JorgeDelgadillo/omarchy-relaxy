@@ -3,6 +3,9 @@ import Gst from "gi://Gst";
 
 const AUDIO_CAPS_TEXT = "audio/x-raw,format=S16LE,rate=44100,channels=2,layout=interleaved";
 const NOISE_WAVE_ENUM = { "white-noise": 5, "pink-noise": 6 };
+const END_WATCH_INTERVAL_MS = 250;
+const END_WATCH_TOLERANCE = Gst.SECOND / 10;
+const END_WATCH_STALL_TICKS = 3;
 
 function selectAudioSink() {
   const requested = GLib.getenv("RELAXY_AUDIO_SINK");
@@ -36,6 +39,8 @@ export class AmbientMixer {
     this.topologyKey = "";
     this.activeSpecs = [];
     this.eosRecoverySource = 0;
+    this.endWatchSource = 0;
+    this.branchProgress = new Map();
     this.lastSpecs = [];
     this.lastState = { playing: false, masterVolume: 1, presets: [{ volumes: {}, mutes: {} }] };
     this.masterVolume = 1;
@@ -143,6 +148,7 @@ export class AmbientMixer {
       GLib.source_remove(this.eosRecoverySource);
       this.eosRecoverySource = 0;
     }
+    this.stopEndWatch();
     if (!this.pipeline) return;
     if (this.bus) this.bus.remove_signal_watch();
     this.pipeline.set_state(Gst.State.NULL);
@@ -183,8 +189,53 @@ export class AmbientMixer {
       const source = spec.type === "noise" ? null : pipeline.get_by_name(branchElementName("source", spec.id));
       this.branches.set(spec.id, { id: spec.id, spec, volume, source });
     }
+    this.startEndWatch();
     this.applyVolumes();
     this.syncPipeline();
+  }
+
+  startEndWatch() {
+    if (this.endWatchSource) return;
+    this.branchProgress = new Map();
+    this.endWatchSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, END_WATCH_INTERVAL_MS, () => this.checkBranchEnds());
+  }
+
+  stopEndWatch() {
+    if (this.endWatchSource) {
+      GLib.source_remove(this.endWatchSource);
+      this.endWatchSource = 0;
+    }
+    this.branchProgress = new Map();
+  }
+
+  // The audiomixer only forwards end of stream when every input has ended, so
+  // finite files inside a mix are detected here instead of relying on a
+  // pipeline-level EOS message. Probes cannot be used: GJS callbacks are not
+  // safe to run from the streaming thread.
+  checkBranchEnds() {
+    if (!this.pipeline || !this.playing) {
+      this.branchProgress.clear();
+      return GLib.SOURCE_CONTINUE;
+    }
+    for (const branch of this.branches.values()) {
+      if (!branch.source) continue;
+      const positionQuery = Gst.Query.new_position(Gst.Format.TIME);
+      if (!branch.source.query(positionQuery)) continue;
+      const [, position] = positionQuery.parse_position();
+      if (position <= 0) continue;
+      const durationQuery = Gst.Query.new_duration(Gst.Format.TIME);
+      const duration = branch.source.query(durationQuery) ? durationQuery.parse_duration()[1] : -1;
+      const progress = this.branchProgress.get(branch.id) || { position: -1, stalled: 0 };
+      progress.stalled = position === progress.position ? progress.stalled + 1 : 0;
+      progress.position = position;
+      this.branchProgress.set(branch.id, progress);
+      const ended = duration > 0 && position >= duration - END_WATCH_TOLERANCE;
+      if (ended || progress.stalled >= END_WATCH_STALL_TICKS) {
+        this.scheduleEosRecovery();
+        return GLib.SOURCE_CONTINUE;
+      }
+    }
+    return GLib.SOURCE_CONTINUE;
   }
 
   levelFor(spec) {

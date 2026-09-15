@@ -3,90 +3,175 @@ import GLib from "gi://GLib";
 import { AmbientMixer } from "../backend/mixer.js";
 
 Gst.init(null);
-const events = [];
 
-function stateFor(soundId, level = 0.2) {
+function fail(message) {
+  throw new Error(message);
+}
+
+function pumpLoop(seconds) {
+  const loop = new GLib.MainLoop(null, false);
+  const source = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.max(1, Math.round(seconds * 1000)), () => {
+    loop.quit();
+    return GLib.SOURCE_CONTINUE;
+  });
+  loop.run();
+  GLib.source_remove(source);
+}
+
+function waitUntil(predicate, timeoutSeconds) {
+  const loop = new GLib.MainLoop(null, false);
+  let intervalAlive = true;
+  let timeoutAlive = true;
+  let satisfied = false;
+  const interval = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 25, () => {
+    if (!predicate()) return GLib.SOURCE_CONTINUE;
+    intervalAlive = false;
+    satisfied = true;
+    if (timeoutAlive) {
+      GLib.source_remove(timeout);
+      timeoutAlive = false;
+    }
+    loop.quit();
+    return GLib.SOURCE_REMOVE;
+  });
+  const timeout = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, timeoutSeconds, () => {
+    timeoutAlive = false;
+    loop.quit();
+    return GLib.SOURCE_REMOVE;
+  });
+  loop.run();
+  if (intervalAlive) GLib.source_remove(interval);
+  if (timeoutAlive) GLib.source_remove(timeout);
+  return satisfied;
+}
+
+function createShortFile(path) {
+  const writer = Gst.parse_launch(
+    `audiotestsrc num-buffers=8 samplesperbuffer=11025 ! audioconvert ! audioresample ! vorbisenc ! oggmux ! filesink location=${path}`,
+  );
+  if (!writer) fail("Could not create the short test file pipeline");
+  const bus = writer.get_bus();
+  const loop = new GLib.MainLoop(null, false);
+  bus.add_signal_watch();
+  const watch = bus.connect("message", (_bus, message) => {
+    if (message.type === Gst.MessageType.EOS || message.type === Gst.MessageType.ERROR) loop.quit();
+  });
+  writer.set_state(Gst.State.PLAYING);
+  loop.run();
+  bus.disconnect(watch);
+  bus.remove_signal_watch();
+  writer.set_state(Gst.State.NULL);
+}
+
+function stateWith(volumes) {
+  const mutes = {};
+  for (const id of Object.keys(volumes)) mutes[id] = false;
   return {
     playing: true,
     masterVolume: 1,
     activePresetId: "default",
-    presets: [{ id: "default", volumes: { [soundId]: level }, mutes: { [soundId]: false } }],
+    presets: [{ id: "default", volumes, mutes }],
   };
 }
 
-const mixer = new AmbientMixer((event) => events.push(event));
-try {
-mixer.sync([{ id: "pink-noise", type: "noise", wave: "pink-noise" }], stateFor("pink-noise"));
-if (!mixer.pipeline || !mixer.mixer || !mixer.master) throw new Error("Mixer pipeline was not created");
-if (!mixer.branches.has("pink-noise")) throw new Error("Noise branch was not attached");
-mixer.master.set_property("volume", 0.25);
-mixer.sync([], { ...stateFor("pink-noise"), playing: false });
-
-const rainPath = GLib.build_filenamev([GLib.get_current_dir(), "assets", "sounds", "rain.ogg"]);
-mixer.sync([{ id: "rain", type: "file", path: rainPath }], stateFor("rain"));
-const rainBranch = mixer.branches.get("rain");
-if (!rainBranch || !rainBranch.source) throw new Error("File branch was not attached");
-const loop = new GLib.MainLoop(null, false);
-GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => { loop.quit(); return GLib.SOURCE_REMOVE; });
-loop.run();
-if (events.some((event) => event.type === "error" && event.soundId === "rain")) {
-  print(JSON.stringify(events));
-  throw new Error("File branch emitted an error");
-}
-
-const stormPath = GLib.build_filenamev([GLib.get_current_dir(), "assets", "sounds", "storm.ogg"]);
-const multiState = {
-  playing: true,
-  masterVolume: 1,
-  activePresetId: "default",
-  presets: [{ id: "default", volumes: { rain: 0.2, storm: 0.2 }, mutes: { rain: false, storm: false } }],
-};
-mixer.sync([
-  { id: "rain", type: "file", path: rainPath },
-  { id: "storm", type: "file", path: stormPath },
-], multiState);
-const stormBranch = mixer.branches.get("storm");
-if (!stormBranch || !stormBranch.source) throw new Error("Storm branch was not attached");
-let eosCount = 0;
-mixer.bus.connect("message", (_bus, message) => {
-  if (message.type === Gst.MessageType.EOS) eosCount += 1;
+const events = [];
+let mixer;
+mixer = new AmbientMixer((event) => {
+  events.push(event);
+  if (event.type === "pipeline-ready" && mixer.sink) mixer.sink.set_property("sync", true);
 });
-GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 27, () => { loop.quit(); return GLib.SOURCE_REMOVE; });
-loop.run();
-const stormStatsBeforeLoop = mixer.sink.stats;
-const renderedBeforeLoop = stormStatsBeforeLoop.get_value("rendered");
-GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 3, () => { loop.quit(); return GLib.SOURCE_REMOVE; });
-loop.run();
-const stormStatsAfterLoop = mixer.sink.stats;
-const renderedAfterLoop = stormStatsAfterLoop.get_value("rendered");
-const [, stormState] = mixer.pipeline.get_state(0);
-if (eosCount === 0) throw new Error("Storm test did not reach EOS");
-if (renderedAfterLoop <= renderedBeforeLoop) {
-  print(JSON.stringify({ eosCount, renderedBeforeLoop, renderedAfterLoop, events }));
-  throw new Error("Storm pipeline did not render audio after EOS");
-}
-if (stormState !== Gst.State.PLAYING) throw new Error(`Storm pipeline did not resume PLAYING: ${stormState}`);
 
-const liveMixState = {
-  playing: true,
-  masterVolume: 1,
-  activePresetId: "default",
-  presets: [{ id: "default", volumes: { "pink-noise": 0.2, storm: 0.2 }, mutes: { "pink-noise": false, storm: false } }],
-};
-mixer.sync([
-  { id: "pink-noise", type: "noise", wave: "pink-noise" },
-  { id: "storm", type: "file", path: stormPath },
-], liveMixState);
-const liveStormBranch = mixer.branches.get("storm");
-if (!liveStormBranch || !liveStormBranch.source) throw new Error("Live storm branch was not attached");
-mixer.pipeline.seek_simple(Gst.Format.TIME, Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT, 23 * Gst.SECOND);
-GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => { loop.quit(); return GLib.SOURCE_REMOVE; });
-loop.run();
-const positionQuery = Gst.Query.new_position(Gst.Format.TIME);
-if (!liveStormBranch.source.query(positionQuery)) throw new Error("Could not query live storm position");
-const [, liveStormPosition] = positionQuery.parse_position();
-if (liveStormPosition >= 8 * Gst.SECOND) throw new Error(`Live storm branch did not loop: ${liveStormPosition}`);
+function syncSink() {
+  if (mixer.sink) mixer.sink.set_property("sync", true);
+}
+
+function assertRecovered(label, baseIndex, previousPipeline, soundId) {
+  const newEvents = events.slice(baseIndex);
+  const errors = newEvents.filter((event) => event.type === "error");
+  if (errors.length > 0) {
+    print(JSON.stringify(errors));
+    fail(`${label}: recovery emitted an error`);
+  }
+  if (mixer.pipeline === previousPipeline) fail(`${label}: pipeline was not rebuilt`);
+  const branch = mixer.branches.get(soundId);
+  if (!branch || !branch.volume) fail(`${label}: ${soundId} branch is missing after recovery`);
+  if (Math.abs(branch.volume.volume - 0.2) >= 0.001) fail(`${label}: ${soundId} level was not restored`);
+  if (!waitUntil(() => mixer.pipeline.get_state(0)[1] === Gst.State.PLAYING, 5)) {
+    fail(`${label}: pipeline did not resume PLAYING after recovery`);
+  }
+  const renderedBefore = mixer.sink.stats.get_value("rendered");
+  pumpLoop(0.5);
+  const renderedAfter = mixer.sink.stats.get_value("rendered");
+  if (renderedAfter <= renderedBefore) fail(`${label}: pipeline did not render audio after recovery`);
+}
+
+const tempDirectory = GLib.dir_make_tmp("relaxy-mixer-test-XXXXXX");
+const shortPath = GLib.build_filenamev([tempDirectory, "short.ogg"]);
+const rainPath = GLib.build_filenamev([GLib.get_current_dir(), "assets", "sounds", "rain.ogg"]);
+
+try {
+  createShortFile(shortPath);
+
+  mixer.sync([{ id: "pink-noise", type: "noise", wave: "pink-noise" }], stateWith({ "pink-noise": 0.2 }));
+  if (!mixer.pipeline || !mixer.mixer || !mixer.master) fail("Mixer pipeline was not created");
+  if (!mixer.branches.has("pink-noise")) fail("Noise branch was not attached");
+  mixer.master.set_property("volume", 0.25);
+  mixer.sync([], { ...stateWith({ "pink-noise": 0.2 }), playing: false });
+  if (mixer.pipeline) fail("An empty mix should release the pipeline");
+
+  mixer.sync([{ id: "rain", type: "file", path: rainPath }], stateWith({ rain: 0.2 }));
+  syncSink();
+  if (!mixer.branches.get("rain")?.source) fail("File branch was not attached");
+  pumpLoop(1);
+  if (events.some((event) => event.type === "error" && event.soundId === "rain")) {
+    print(JSON.stringify(events));
+    fail("File branch emitted an error");
+  }
+
+  let baseIndex = events.length;
+  mixer.sync([{ id: "short", type: "file", path: shortPath }], stateWith({ short: 0.2 }));
+  syncSink();
+  let previousPipeline = mixer.pipeline;
+  if (!waitUntil(() => events.slice(baseIndex).some((event) => event.type === "pipeline-ready"), 15)) {
+    fail("Single file did not recover after end of stream");
+  }
+  assertRecovered("single file", baseIndex, previousPipeline, "short");
+
+  // The audiomixer only posts EOS when every input has ended, so a finite file
+  // inside a mixed topology must be recycled from its own branch.
+  baseIndex = events.length;
+  mixer.sync([
+    { id: "rain", type: "file", path: rainPath },
+    { id: "short", type: "file", path: shortPath },
+  ], stateWith({ rain: 0.2, short: 0.2 }));
+  syncSink();
+  previousPipeline = mixer.pipeline;
+  let busEos = 0;
+  mixer.bus.connect("message", (_bus, message) => {
+    if (message.type === Gst.MessageType.EOS) busEos += 1;
+  });
+  if (!waitUntil(() => events.slice(baseIndex).some((event) => event.type === "pipeline-ready"), 15)) {
+    fail("Mixed files did not recycle the ended branch");
+  }
+  if (busEos !== 0) fail(`Mixed files reported pipeline EOS while rain was still playing: ${busEos}`);
+  assertRecovered("mixed files", baseIndex, previousPipeline, "short");
+
+  // The same applies when a live noise source never ends.
+  baseIndex = events.length;
+  mixer.sync([
+    { id: "pink-noise", type: "noise", wave: "pink-noise" },
+    { id: "short", type: "file", path: shortPath },
+  ], stateWith({ "pink-noise": 0.2, short: 0.2 }));
+  syncSink();
+  previousPipeline = mixer.pipeline;
+  if (!waitUntil(() => events.slice(baseIndex).some((event) => event.type === "pipeline-ready"), 15)) {
+    fail("File plus live noise did not recycle the ended branch");
+  }
+  assertRecovered("file plus live noise", baseIndex, previousPipeline, "short");
 } finally {
   mixer.stop();
+  GLib.unlink(shortPath);
+  GLib.rmdir(tempDirectory);
 }
+
 print("Mixer tests passed.");
