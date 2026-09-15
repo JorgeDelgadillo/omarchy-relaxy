@@ -52,6 +52,13 @@ operation to the GLib main loop and rebuilds `activeSpecs`. Keep the recovery
 coalesced to one pending idle source, cancel it when disposing the pipeline,
 and do not substitute `lastSpecs` for `activeSpecs`.
 
+Because the audiomixer only forwards EOS when every input has ended, finite
+files inside a mix are detected by `checkBranchEnds()`, a GLib timeout that
+watches file branch positions and durations on the main loop. Do not replace it
+with pad probes: GJS callbacks are not safe to run from GStreamer streaming
+threads and crash the process. Cancel the watcher together with the recovery
+source when disposing the pipeline.
+
 ## Validation commands
 
 Run these from the repository root:
@@ -67,11 +74,12 @@ RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
 ./tests/integration.sh
 ```
 
-`tests/mixer.test.js` is intentionally a long-running regression test. It
-waits past the 25.7-second `storm.ogg` file and checks recovery in both a
-file-only mix and a file-plus-live-noise mix. `tests/integration.sh` creates a
-temporary D-Bus session and may require a normal user session rather than a
-restricted sandbox.
+`tests/mixer.test.js` generates a short OGG file and drives recovery in a
+single-file topology, a file mixed with a bundled recording, and a file mixed
+with live noise. It sets `sync` on the fake sink so each phase runs in real
+time and finishes in a few seconds. `tests/integration.sh` creates a temporary
+D-Bus session and may require a normal user session rather than a restricted
+sandbox.
 
 ## Recent audio recovery history
 
@@ -80,6 +88,7 @@ The current recovery behavior was introduced in these local commits:
 - `c9e0a51` — recover mixed playback after end of stream.
 - `5001abf` — cover mixed live-source looping with a regression test.
 - `808074b` — keep the backend responsive during audio recovery.
+- `21e209d` — recycle finite files mixed with other sounds.
 
 When debugging a future regression, first check whether a GStreamer bus
 callback is performing synchronous state work and whether commands sent to the

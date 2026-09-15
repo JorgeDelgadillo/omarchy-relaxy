@@ -100,9 +100,10 @@ RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
 ./tests/service_contract.sh
 ```
 
-The mixer regression test intentionally runs for more than thirty seconds. It
-waits past the end of `storm.ogg` to verify that mixed file and live-noise
-playback recovers correctly.
+The mixer regression test generates a short OGG file and verifies that a
+finite sound is recycled in a single-file mix, alongside a bundled recording,
+and alongside live noise. It runs in a few seconds and does not depend on the
+duration of the bundled tracks.
 
 Run the socket and MPRIS integration test in a session that permits temporary
 Unix sockets:

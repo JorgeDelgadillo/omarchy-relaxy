@@ -11,4 +11,6 @@
 - Fixed initial volume application after dynamic file decoder preroll.
 - Fixed mixed-track end-of-stream recovery, including the non-blocking backend
   recovery path required by PipeWire playback.
+- Fixed finite sounds stopping silently when mixed with other active sounds;
+  branch end detection now avoids streaming-thread callbacks.
 - Added regression coverage for file-only and file-plus-live-noise mixes.

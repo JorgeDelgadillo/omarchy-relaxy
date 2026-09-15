@@ -66,6 +66,14 @@ all available catalog and custom sounds and must not be used for playback
 recovery. Dynamic decoder preroll also triggers a second volume application so
 stored levels are not lost when a file branch links.
 
+The audiomixer only forwards `EOS` when every input has ended, so a finite file
+that ends while other sounds are still active would otherwise stop silently.
+The mixer therefore also watches each file branch's position and duration from
+a GLib timeout (`checkBranchEnds()`) and schedules the same recovery when a
+branch reaches its end. Pad probes are not used because GJS callbacks are not
+safe to run from streaming threads. Both the recovery idle source and the
+branch watcher are cancelled when the pipeline is disposed.
+
 ## State model
 
 `model.js` normalizes every loaded document to schema version 1. It clamps
