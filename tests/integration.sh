@@ -54,6 +54,22 @@ response="$(command_response '{"id":"integration-custom","action":"add-custom-so
 jq -e '.ok == true and (.state.customSounds | length) == 1' <<<"$response" >/dev/null
 
 custom_id="$(jq -r '.state.customSounds[0].id' <<<"$response")"
+status_path="${socket_path%.sock}.status.json"
+
+response="$(command_response "{\"id\":\"integration-custom-volume\",\"action\":\"set-sound-volume\",\"payload\":{\"soundId\":\"$custom_id\",\"volume\":0.2}}")"
+jq -e '.ok == true' <<<"$response" >/dev/null
+
+for _attempt in $(seq 1 50); do
+  [[ -f "$status_path" ]] && jq -e --arg custom_id "$custom_id" '.lastError.soundId == $custom_id' "$status_path" >/dev/null 2>&1 && break
+  sleep 0.1
+done
+jq -e --arg custom_id "$custom_id" '.lastError.soundId == $custom_id and (.lastError.message | length > 0)' "$status_path" >/dev/null
+rg -q 'relaxy: sound .* error:' "$runtime_dir/backend.log"
+
+response="$(command_response '{"id":"integration-dismiss","action":"dismiss-error","payload":{}}')"
+jq -e '.ok == true' <<<"$response" >/dev/null
+jq -e '.lastError == null' "$status_path" >/dev/null
+
 response="$(command_response "{\"id\":\"integration-hide\",\"action\":\"set-hide-inactive\",\"payload\":{\"value\":true}}")"
 jq -e '.ok == true and .state.presets[1].hideInactive == true' <<<"$response" >/dev/null
 

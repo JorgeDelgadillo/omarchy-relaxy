@@ -24,6 +24,7 @@ Item {
   property string editorId: ""
   property string confirmAction: ""
   property var confirmPayload: ({})
+  property var lastError: null
 
   readonly property string pluginDirectory: localPath(Qt.resolvedUrl(".."))
   readonly property string backendPath: pluginDirectory + "/backend/relaxy.js"
@@ -31,9 +32,29 @@ Item {
   readonly property string statePath: stateDirectory + "/relaxy/state.json"
   readonly property string runtimeDirectory: Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
   readonly property string socketPath: runtimeDirectory + "/relaxy-" + (Quickshell.env("USER") || "user") + ".sock"
+  readonly property string statusPath: runtimeDirectory + "/relaxy-" + (Quickshell.env("USER") || "user") + ".status.json"
   readonly property var preset: Catalog.activePreset(root.mixerState)
   readonly property string barGlyph: root.mixerState.playing ? "󰏤" : "󰐊"
   readonly property string tooltipText: "Relaxy · " + (root.mixerState.playing ? "Playing" : "Paused")
+  readonly property string errorText: {
+    if (!root.lastError) return "";
+    var prefix = root.lastError.soundId ? root.soundTitle(root.lastError.soundId) + ": " : "";
+    return "⚠ " + prefix + root.lastError.message;
+  }
+
+  function soundTitle(soundId) {
+    for (var groupIndex = 0; groupIndex < Catalog.groups.length; groupIndex += 1) {
+      var sounds = Catalog.groups[groupIndex].sounds;
+      for (var soundIndex = 0; soundIndex < sounds.length; soundIndex += 1) {
+        if (sounds[soundIndex].id === soundId) return sounds[soundIndex].title;
+      }
+    }
+    var customSounds = root.mixerState.customSounds || [];
+    for (var customIndex = 0; customIndex < customSounds.length; customIndex += 1) {
+      if (customSounds[customIndex].id === soundId) return customSounds[customIndex].name;
+    }
+    return soundId;
+  }
 
   function localPath(url) {
     return decodeURIComponent(String(url).replace(/^file:\/\//, ""));
@@ -42,6 +63,7 @@ Item {
   function open() {
     root.opened = true;
     stateFile.reload();
+    statusFile.reload();
   }
 
   function close() {
@@ -116,6 +138,15 @@ Item {
     }
   }
 
+  function reloadStatus() {
+    try {
+      var parsed = JSON.parse(statusFile.text());
+      root.lastError = parsed && parsed.lastError ? parsed.lastError : null;
+    } catch (error) {
+      root.lastError = null;
+    }
+  }
+
   function startPendingCommand() {
     if (root.pendingCommand === "") return;
     var command = root.pendingCommand;
@@ -178,10 +209,22 @@ Item {
     onFileChanged: reload()
   }
 
+  FileView {
+    id: statusFile
+    path: root.statusPath
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.reloadStatus()
+    onFileChanged: reload()
+  }
+
   Timer {
     interval: 1200
     running: true
-    onTriggered: stateFile.reload()
+    onTriggered: {
+      stateFile.reload();
+      statusFile.reload();
+    }
   }
 
   Process {
@@ -365,7 +408,7 @@ Item {
         QQC2.ComboBox {
           id: presetBox
           width: Style.space(150)
-            model: root.mixerState.presets || []
+          model: root.mixerState.presets || []
           textRole: "name"
           currentIndex: Math.max(0, (root.mixerState.presets || []).findIndex(function(item) { return item.id === root.mixerState.activePresetId; }))
           onActivated: function(index) {
@@ -377,6 +420,29 @@ Item {
           iconText: "󰐕"
           foreground: root.bar ? root.bar.foreground : "white"
           onClicked: root.sendAction("toggle-playing", {})
+        }
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+        visible: root.lastError !== null
+
+        Text {
+          width: parent.width - Style.space(28)
+          text: root.errorText
+          color: Color.urgent
+          font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+          verticalAlignment: Text.AlignVCenter
+        }
+
+        Button {
+          iconText: "󰅖"
+          foreground: root.bar ? root.bar.foreground : "white"
+          tooltipText: "Dismiss error"
+          onClicked: root.sendAction("dismiss-error", {})
         }
       }
 

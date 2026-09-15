@@ -27,5 +27,8 @@ grep -q 'set-inhibit-suspension' "$repo_dir/ui/Panel.qml"
 grep -q 'set-hide-inactive' "$repo_dir/ui/Panel.qml"
 grep -q 'FileDialog' "$repo_dir/ui/Panel.qml"
 grep -q 'About Relaxy' "$repo_dir/ui/Panel.qml"
+grep -q 'statusPath' "$repo_dir/ui/Panel.qml"
+grep -q 'lastError' "$repo_dir/ui/Panel.qml"
+grep -q 'dismiss-error' "$repo_dir/ui/Panel.qml"
 
 echo "Relaxy shell UI contract is present."

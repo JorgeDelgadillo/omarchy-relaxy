@@ -220,17 +220,19 @@ class MprisAdapter {
 }
 
 export class Backend {
-  constructor({ assetDirectory, socketPath, settingsPath }) {
+  constructor({ assetDirectory, socketPath, settingsPath, statusPath }) {
     this.assetDirectory = assetDirectory;
     this.socketPath = socketPath;
     this.settingsPath = settingsPath;
+    this.statusPath = statusPath;
     this.state = loadState(settingsPath);
     if (this.state.startPaused) this.state.playing = false;
     this.clients = new Set();
     this.loop = new GLib.MainLoop(null, false);
     this.inhibitor = null;
     this.responseClient = null;
-    this.mixer = new AmbientMixer((event) => this.broadcast({ type: "event", event }));
+    this.lastError = null;
+    this.mixer = new AmbientMixer((event) => this.handleMixerEvent(event));
     this.mpris = new MprisAdapter(this);
     this.server = new Gio.SocketService();
     this.powerMonitor = Gio.PowerProfileMonitor.dup_default();
@@ -256,6 +258,7 @@ export class Backend {
     });
     this.server.start();
     this.sync();
+    this.writeStatus();
     this.broadcast({ type: "ready", state: this.state });
     GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, 15, () => { this.stop(); return GLib.SOURCE_REMOVE; });
     GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, 2, () => { this.stop(); return GLib.SOURCE_REMOVE; });
@@ -297,6 +300,43 @@ export class Backend {
     }
   }
 
+  handleMixerEvent(event) {
+    if (event.type === "error") {
+      this.lastError = {
+        soundId: event.soundId || null,
+        message: event.message,
+        debug: event.debug || "",
+        at: Date.now(),
+      };
+      this.writeStatus();
+      printerr(`relaxy: ${event.soundId ? `sound ${event.soundId}` : "pipeline"} error: ${event.message}${event.debug ? ` (${event.debug})` : ""}`);
+    }
+    this.broadcast({ type: "event", event });
+  }
+
+  writeStatus() {
+    const document = { schemaVersion: 1, lastError: this.lastError };
+    try {
+      GLib.mkdir_with_parents(GLib.path_get_dirname(this.statusPath), 0o700);
+      const temporaryPath = `${this.statusPath}.tmp-${GLib.get_real_time()}`;
+      GLib.file_set_contents(temporaryPath, `${JSON.stringify(document, null, 2)}\n`);
+      GLib.rename(temporaryPath, this.statusPath);
+    } catch (error) {
+      printerr(`relaxy: could not write the status file: ${error.message}`);
+    }
+  }
+
+  clearSoundError(soundId) {
+    if (!this.lastError || this.lastError.soundId !== soundId) return;
+    this.dismissError();
+  }
+
+  dismissError() {
+    if (!this.lastError) return;
+    this.lastError = null;
+    this.writeStatus();
+  }
+
   handleRequest(client, request) {
     this.responseClient = client;
     try {
@@ -316,8 +356,8 @@ export class Backend {
       case "toggle-playing": this.setPlaying(!this.state.playing); break;
       case "stop": this.setPlaying(false); break;
       case "set-master-volume": this.setMasterVolume(payload.volume); break;
-      case "set-sound-volume": this.mutate((state) => setSoundVolume(state, payload.soundId, payload.volume)); break;
-      case "toggle-sound": this.mutate((state) => setSoundPlaying(state, payload.soundId, payload.playing)); break;
+      case "set-sound-volume": this.clearSoundError(payload.soundId); this.mixer.clearFailure(payload.soundId); this.mutate((state) => setSoundVolume(state, payload.soundId, payload.volume)); break;
+      case "toggle-sound": this.clearSoundError(payload.soundId); this.mixer.clearFailure(payload.soundId); this.mutate((state) => setSoundPlaying(state, payload.soundId, payload.playing)); break;
       case "set-preset": this.mutate((state) => setActivePreset(state, payload.presetId)); break;
       case "next-preset": this.mutate((state) => stepPreset(state, 1)); break;
       case "previous-preset": this.mutate((state) => stepPreset(state, -1)); break;
@@ -331,6 +371,7 @@ export class Backend {
       case "set-start-paused": this.mutate((state) => { state.startPaused = Boolean(payload.value); return state; }); break;
       case "set-inhibit-suspension": this.mutate((state) => { state.inhibitSuspension = Boolean(payload.value); return state; }); break;
       case "set-hide-inactive": this.mutate((state) => { activePreset(state).hideInactive = Boolean(payload.value); return state; }); break;
+      case "dismiss-error": this.dismissError(); break;
       default: throw new Error(`Unknown action: ${action}`);
     }
     return this.state;
@@ -360,6 +401,7 @@ export class Backend {
 
   sync() {
     const specs = allSoundSpecs(this.assetDirectory, this.state.customSounds);
+    if (this.lastError?.soundId && !specs.some((spec) => spec.id === this.lastError.soundId)) this.dismissError();
     this.mixer.sync(specs, this.state);
     if (this.state.playing && this.state.inhibitSuspension) this.startInhibitor();
     else this.stopInhibitor();
@@ -370,7 +412,7 @@ export class Backend {
     try {
       this.inhibitor = Gio.Subprocess.new(["systemd-inhibit", "--what=sleep", "--who=Relaxy", "--why=Ambient playback in progress", "--mode=block", "sleep", "infinity"], Gio.SubprocessFlags.NONE);
     } catch (error) {
-      this.broadcast({ type: "event", event: { type: "error", soundId: null, message: `Could not inhibit suspension: ${error.message}` } });
+      this.handleMixerEvent({ type: "error", soundId: null, message: `Could not inhibit suspension: ${error.message}`, debug: "" });
     }
   }
 
@@ -387,6 +429,7 @@ export class Backend {
     for (const client of [...this.clients]) this.closeClient(client);
     this.server.stop();
     try { GLib.unlink(this.socketPath); } catch (_error) { /* The socket may already be gone. */ }
+    try { GLib.unlink(this.statusPath); } catch (_error) { /* The status file may already be gone. */ }
     if (this.loop.is_running()) this.loop.quit();
   }
 }
@@ -405,6 +448,7 @@ function argumentsObject() {
     result.socketPath = GLib.build_filenamev([runtime, `relaxy-${GLib.get_user_name()}.sock`]);
   }
   if (!result.assetDirectory) result.assetDirectory = GLib.build_filenamev([GLib.path_get_dirname(import.meta.url.replace("file://", "")), "..", "assets", "sounds"]);
+  result.statusPath = `${result.socketPath.replace(/\.sock$/, "")}.status.json`;
   return result;
 }
 
