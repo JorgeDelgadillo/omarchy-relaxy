@@ -89,6 +89,8 @@ rm -f "${XDG_RUNTIME_DIR:-/tmp}/relaxy-$USER.sock" "${XDG_RUNTIME_DIR:-/tmp}/rel
 
 ## Usage
 
+![Relaxy panel](assets/relaxy-panel.png)
+
 Click the Relaxy bar icon to open the mixer. Left and right click both toggle
 the panel, while middle click toggles playback without opening it. The panel
 contains the master control, per-sound sliders, preset controls, custom sound
