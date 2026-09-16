@@ -61,6 +61,32 @@ After installation, restart the shell if it does not rescan automatically:
 omarchy restart shell
 ```
 
+## Uninstallation
+
+Remove the plugin, its bar entry, and the loaded service:
+
+```bash
+omarchy plugin remove jdelgadillo.relaxy --yes
+```
+
+The command unloads the widget and deletes the plugin folder under
+`~/.config/omarchy/plugins/`. If the bar still shows the widget, reload the
+shell with `omarchy restart shell`.
+
+The state file is kept so reinstalling preserves presets, volumes, and custom
+sounds. Delete it explicitly to reset Relaxy:
+
+```bash
+rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/relaxy"
+```
+
+The backend removes its socket and status file when it exits. If an abrupt
+shell unload leaves stale runtime files behind, remove them with:
+
+```bash
+rm -f "${XDG_RUNTIME_DIR:-/tmp}/relaxy-$USER.sock" "${XDG_RUNTIME_DIR:-/tmp}/relaxy-$USER.status.json"
+```
+
 ## Usage
 
 Click the Relaxy bar icon to open the mixer. Left and right click both toggle

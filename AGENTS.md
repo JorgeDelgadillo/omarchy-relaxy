@@ -13,8 +13,9 @@ $HOME/.config/omarchy/plugins/jdelgadillo.relaxy/
 ```
 
 Never edit `/usr/share/omarchy/`; it is managed by the Omarchy package. The
-user-owned plugin is installed and enabled with `omarchy plugin` commands, and
-the shell can be reloaded with `omarchy restart shell`.
+user-owned plugin is installed and enabled with `omarchy plugin` commands,
+removed with `omarchy plugin remove jdelgadillo.relaxy`, and the shell can be
+reloaded with `omarchy restart shell`.
 
 ## Collaboration rules
 
