@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 - Unreleased
+## 0.1.0 - 2026-09-17
 
 - Added an Omarchy schema-version-1 bar widget and persistent service.
 - Added the fourteen attributed ambient recordings from Blanket's catalog.
@@ -21,3 +21,4 @@
 - Added regression coverage for file-only and file-plus-live-noise mixes.
 - Fixed launch playback so start-paused and an already-active power-saver
   profile persist a paused state before the first mixer sync.
+- Added plugin identity, license, and sound attribution to the About dialog.

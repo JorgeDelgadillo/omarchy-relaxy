@@ -21,6 +21,7 @@ function compareGroups(label, actual, expected) {
 const repositoryDirectory = GLib.path_get_dirname(GLib.path_get_dirname(decodeURIComponent(import.meta.url.replace("file://", ""))));
 const soundDirectory = GLib.build_filenamev([repositoryDirectory, "assets", "sounds"]);
 const catalogPath = GLib.build_filenamev([repositoryDirectory, "assets", "catalog.json"]);
+const manifestPath = GLib.build_filenamev([repositoryDirectory, "manifest.json"]);
 const uiCatalogPath = GLib.build_filenamev([repositoryDirectory, "ui", "Catalog.js"]);
 
 const [catalogOk, catalogContents] = GLib.file_get_contents(catalogPath);
@@ -46,6 +47,13 @@ compareGroups("backend groups", groupsWithSounds(soundDirectory), catalog.groups
 const [uiOk, uiContents] = GLib.file_get_contents(uiCatalogPath);
 assert(uiOk, "Could not read ui/Catalog.js");
 const uiSource = new TextDecoder().decode(uiContents).replace(/^\s*\.pragma library\s*$/m, "");
+const [manifestOk, manifestContents] = GLib.file_get_contents(manifestPath);
+assert(manifestOk, "Could not read manifest.json");
+const manifest = JSON.parse(new TextDecoder().decode(manifestContents));
+const identity = new Function(`${uiSource}\nreturn { version, license, author };`)();
+assert(identity.version === manifest.version, `ui version ${identity.version} != manifest ${manifest.version}`);
+assert(identity.license === manifest.license, `ui license ${identity.license} != manifest ${manifest.license}`);
+assert(identity.author === manifest.author, `ui author ${identity.author} != manifest ${manifest.author}`);
 const uiGroups = new Function(`${uiSource}\nreturn groups;`)();
 compareGroups("ui groups", uiGroups, catalog.groups);
 const titlesById = new Map(catalog.sounds.map((sound) => [sound.id, sound.title]));

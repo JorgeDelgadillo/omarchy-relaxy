@@ -349,16 +349,18 @@ Item {
 
   QQC2.Dialog {
     id: aboutDialog
-    width: Style.space(360)
+    width: Style.space(380)
     modal: true
     title: "About Relaxy"
     standardButtons: QQC2.Dialog.Close
 
     contentItem: Column {
+      width: parent.width
       spacing: Style.space(8)
 
       Text {
-        text: "Relaxy 0.1.0"
+        width: parent.width
+        text: "Relaxy " + Catalog.version
         color: root.bar ? root.bar.foreground : "white"
         font.family: root.bar ? root.bar.fontFamily : "sans-serif"
         font.pixelSize: Style.font.subtitle
@@ -366,7 +368,26 @@ Item {
       }
 
       Text {
-        text: "An Omarchy ambient sound mixer inspired by Blanket. The bundled sounds retain their original attribution and license information in the plugin's assets directory."
+        width: parent.width
+        text: "An unofficial Omarchy plugin for mixing ambient sounds. Inspired by Blanket."
+        color: root.bar ? root.bar.foreground : "white"
+        font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+        font.pixelSize: Style.font.body
+        wrapMode: Text.WordWrap
+      }
+
+      Text {
+        width: parent.width
+        text: "License " + Catalog.license + " · Author " + Catalog.author
+        color: root.bar ? root.bar.foreground : "white"
+        font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+        font.pixelSize: Style.font.body
+        wrapMode: Text.WordWrap
+      }
+
+      Text {
+        width: parent.width
+        text: "The bundled recordings keep their original authors, editors, and licenses. Attribution is in assets/SOUNDS_LICENSES.md."
         color: root.bar ? root.bar.foreground : "white"
         font.family: root.bar ? root.bar.fontFamily : "sans-serif"
         font.pixelSize: Style.font.body
