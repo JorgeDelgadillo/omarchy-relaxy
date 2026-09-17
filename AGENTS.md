@@ -21,6 +21,9 @@ reloaded with `omarchy restart shell`.
 
 - Keep source code, comments, tests, and documentation in English.
 - Make one local Git commit for each implementation step.
+- Do not add `Co-authored-by` trailers or list Cursor, the agent, or any
+  assistant as a Git author or co-author. Commits belong to the repository
+  owner only.
 - Never run `git push`. The repository may have a remote, but publication is a
   deliberate user action.
 - Preserve unrelated user changes and preserve
