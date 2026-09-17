@@ -3,6 +3,7 @@ import {
   DEFAULT_PRESET_ID,
   addCustomSound,
   addPreset,
+  applyLaunchPlayback,
   defaultState,
   loadState,
   normalizeState,
@@ -46,6 +47,23 @@ const normalized = normalizeState({
 assert(normalized.schemaVersion === 1, "state schema should be normalized");
 assert(normalized.masterVolume === 1, "master volume should be clamped");
 assert(normalized.presets.length === 1, "duplicate preset ids should be discarded");
+
+const startPaused = defaultState();
+startPaused.startPaused = true;
+startPaused.playing = true;
+assert(applyLaunchPlayback(startPaused) === true, "start-paused should pause playback on launch");
+assert(startPaused.playing === false, "start-paused launch should leave playback paused");
+assert(applyLaunchPlayback(startPaused) === false, "an already paused start-paused state should stay unchanged");
+
+const powerSaver = defaultState();
+powerSaver.playing = true;
+assert(applyLaunchPlayback(powerSaver, true) === true, "power-saver should pause playback on launch");
+assert(powerSaver.playing === false, "power-saver launch should leave playback paused");
+
+const keepPlaying = defaultState();
+keepPlaying.playing = true;
+assert(applyLaunchPlayback(keepPlaying) === false, "launch should keep playback when start-paused is off");
+assert(keepPlaying.playing === true, "launch should not pause active playback by default");
 
 const testDirectory = GLib.dir_make_tmp("relaxy-model-test-XXXXXX");
 const testPath = GLib.build_filenamev([testDirectory, "state.json"]);

@@ -9,6 +9,7 @@ import {
   activePreset,
   addCustomSound,
   addPreset,
+  applyLaunchPlayback,
   loadState,
   removeCustomSound,
   removePreset,
@@ -59,6 +60,13 @@ function bytes(text) {
 
 function unpack(value) {
   return value instanceof GLib.Variant ? value.deep_unpack() : value;
+}
+
+function powerSaverEnabled(monitor) {
+  if (!monitor) return false;
+  return typeof monitor.get_power_saver_enabled === "function"
+    ? monitor.get_power_saver_enabled()
+    : Boolean(monitor.power_saver_enabled);
 }
 
 class MprisAdapter {
@@ -226,21 +234,20 @@ export class Backend {
     this.settingsPath = settingsPath;
     this.statusPath = statusPath;
     this.state = loadState(settingsPath);
-    if (this.state.startPaused) this.state.playing = false;
     this.clients = new Set();
     this.loop = new GLib.MainLoop(null, false);
     this.inhibitor = null;
     this.responseClient = null;
     this.lastError = null;
+    this.powerMonitor = Gio.PowerProfileMonitor.dup_default();
+    if (applyLaunchPlayback(this.state, powerSaverEnabled(this.powerMonitor))) {
+      saveState(this.state, this.settingsPath);
+    }
     this.mixer = new AmbientMixer((event) => this.handleMixerEvent(event));
     this.mpris = new MprisAdapter(this);
     this.server = new Gio.SocketService();
-    this.powerMonitor = Gio.PowerProfileMonitor.dup_default();
     this.powerMonitor.connect("notify::power-saver-enabled", () => {
-      const enabled = typeof this.powerMonitor.get_power_saver_enabled === "function"
-        ? this.powerMonitor.get_power_saver_enabled()
-        : Boolean(this.powerMonitor.power_saver_enabled);
-      if (enabled && this.state.playing) {
+      if (powerSaverEnabled(this.powerMonitor) && this.state.playing) {
         this.setPlaying(false);
         this.broadcast({ type: "power-saver-paused" });
       }

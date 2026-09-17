@@ -66,7 +66,10 @@ pipeline can wait for streaming work inside a PipeWire sink. A failed sound is
 remembered so automatic recovery does not retry it forever; an explicit user
 action on that sound clears the failure and retries it. The power-profile
 monitor pauses active playback when the system enters power-saver mode and
-leaves it paused until the user starts playback again.
+leaves it paused until the user starts playback again. The same pause is
+applied during backend startup when power-saver is already enabled or when
+`startPaused` is set; the resulting playback flag is written back to the
+state file so the panel and mixer agree before the first sync.
 
 When a mixed pipeline posts `EOS`, the mixer schedules recovery on the GLib
 main loop and rebuilds the current active topology from the beginning. The

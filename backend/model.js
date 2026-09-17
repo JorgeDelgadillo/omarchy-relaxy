@@ -95,6 +95,14 @@ export function normalizeState(raw) {
   return state;
 }
 
+export function applyLaunchPlayback(state, powerSaverEnabled = false) {
+  if ((state.startPaused || powerSaverEnabled) && state.playing) {
+    state.playing = false;
+    return true;
+  }
+  return false;
+}
+
 export function statePath() {
   const base = GLib.getenv("XDG_STATE_HOME") || GLib.build_filenamev([GLib.get_home_dir(), ".local", "state"]);
   return GLib.build_filenamev([base, "relaxy", "state.json"]);

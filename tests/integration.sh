@@ -11,6 +11,27 @@ socket_path="$runtime_dir/backend.sock"
 state_path="$runtime_dir/state.json"
 backend_pid=""
 
+cat >"$state_path" <<'EOF'
+{
+  "schemaVersion": 1,
+  "playing": true,
+  "masterVolume": 1,
+  "startPaused": true,
+  "inhibitSuspension": false,
+  "activePresetId": "default",
+  "presets": [
+    {
+      "id": "default",
+      "name": "Default",
+      "hideInactive": false,
+      "volumes": {},
+      "mutes": {}
+    }
+  ],
+  "customSounds": []
+}
+EOF
+
 cleanup() {
   if [[ -n "$backend_pid" ]] && kill -0 "$backend_pid" 2>/dev/null; then
     kill -TERM "$backend_pid" 2>/dev/null || true
@@ -42,7 +63,11 @@ get_state() {
 }
 
 response="$(get_state)"
-jq -e '.ok == true and .state.schemaVersion == 1 and ((.state.presets | length) == 1)' <<<"$response" >/dev/null
+jq -e '.ok == true and .state.schemaVersion == 1 and .state.startPaused == true and .state.playing == false and ((.state.presets | length) == 1)' <<<"$response" >/dev/null
+jq -e '.playing == false and .startPaused == true' "$state_path" >/dev/null
+
+response="$(command_response '{"id":"integration-play","action":"play","payload":{}}')"
+jq -e '.ok == true and .state.playing == true' <<<"$response" >/dev/null
 
 response="$(command_response '{"id":"integration-volume","action":"set-master-volume","payload":{"volume":0.35}}')"
 jq -e '.ok == true and .state.masterVolume == 0.35' <<<"$response" >/dev/null

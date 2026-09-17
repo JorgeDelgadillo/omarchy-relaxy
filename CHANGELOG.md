@@ -19,3 +19,5 @@
   diagnostics.
 - Added a catalog parity check across the JSON, backend, and UI definitions.
 - Added regression coverage for file-only and file-plus-live-noise mixes.
+- Fixed launch playback so start-paused and an already-active power-saver
+  profile persist a paused state before the first mixer sync.
