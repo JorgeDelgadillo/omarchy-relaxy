@@ -145,6 +145,10 @@ Unix sockets:
 ./tests/integration.sh
 ```
 
+Contributor and agent working context, including the GStreamer invariants that
+must be preserved, is documented in
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+
 Each planned implementation step is represented by its own local Git commit.
 This project intentionally does not push commits or require a remote.
 

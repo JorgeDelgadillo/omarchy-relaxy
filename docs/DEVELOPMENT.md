@@ -1,6 +1,7 @@
-# Agent Guide
+# Development guide
 
-This file records the working context for agents maintaining Relaxy.
+This file records the working context for contributors and agents maintaining
+Relaxy.
 
 ## Project scope
 
@@ -20,6 +21,10 @@ reloaded with `omarchy restart shell`.
 ## Collaboration rules
 
 - Keep source code, comments, tests, and documentation in English.
+- Do not add a root `AGENTS.md`. The plugin tree is installed into user
+  directories, where agent tools treat that filename as trusted instructions.
+  Contributor guidance lives in this file, and `scripts/check.sh` rejects a
+  root `AGENTS.md`.
 - Make one local Git commit for each implementation step.
 - Do not add `Co-authored-by` trailers or list Cursor, the agent, or any
   assistant as a Git author or co-author. Commits belong to the repository
