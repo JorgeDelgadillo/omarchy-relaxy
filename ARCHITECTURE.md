@@ -30,17 +30,30 @@ the panel and middle click to playback.
 
 ## Backend protocol
 
-The backend accepts one newline-delimited JSON request per line. A request has
-an `id`, an `action`, and an optional `payload`. The response includes `ok`,
-the request id, the resulting state, and an error message when the action
-fails. The UI uses one short-lived command client per command and reloads the
-state file after every response. Backend broadcasts notify other connected
-clients about state changes and sound errors.
+The backend accepts one newline-delimited JSON request per line, read with a
+64 KiB byte ceiling: oversized or undecodable input closes the connection
+without changing state. Every request is validated against a per-action
+schema (known actions, exact fields, value types, and string length caps)
+before it can change state; anything else receives an error response. The
+response includes `ok`, the request id, the resulting state, and an error
+message when the action fails. The UI uses one short-lived command client per
+command and reloads the state file after every response. Backend broadcasts
+notify other connected clients about state changes and sound errors.
 
 Supported action families include playback (`play`, `pause`, `stop`, and
 `toggle-playing`), volume changes, sound toggling, preset selection and
 management, custom sound management, playback preferences, and `dismiss-error`
 for the last reported sound error.
+
+The socket directory is the trust boundary for local IPC. The backend uses
+`$XDG_RUNTIME_DIR` when it is a user-owned directory and otherwise derives a
+per-user fallback under `$TMPDIR` (`relaxy-$USER`); the shell UI mirrors both
+formulas, since `$TMPDIR` and `$USER` are visible to QML. The directory is
+created and verified as 0700 and owned by the current user, a stale file at
+the socket path is replaced only when it is a user-owned socket, and the
+bound socket is enforced and re-verified as 0600. State and status files are
+written owner-only (0600) through a temporary file followed by an atomic
+rename.
 
 The backend writes `$XDG_RUNTIME_DIR/relaxy-$USER.status.json`, derived from
 the socket path, with the last mixer error (`soundId`, `message`, `debug`, and
@@ -93,8 +106,8 @@ branch watcher are cancelled when the pipeline is disposed.
 
 `model.js` normalizes every loaded document to schema version 1. It clamps
 volumes, removes duplicate ids, guarantees a default preset, cleans names, and
-filters invalid custom sound entries. Saves use a mode-700 state directory and
-an atomic temporary-file rename.
+filters invalid custom sound entries. Saves use a mode-700 state directory, an
+owner-only (0600) file mode, and an atomic temporary-file rename.
 
 The default preset is protected from deletion. New presets copy the active
 preset, and removing a custom sound also removes its volume and mute entries

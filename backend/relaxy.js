@@ -22,6 +22,7 @@ import {
   setSoundVolume,
   statePath,
   stepPreset,
+  writePrivateFile,
 } from "./model.js";
 import { AmbientMixer } from "./mixer.js";
 
@@ -67,6 +68,113 @@ function powerSaverEnabled(monitor) {
   return typeof monitor.get_power_saver_enabled === "function"
     ? monitor.get_power_saver_enabled()
     : Boolean(monitor.power_saver_enabled);
+}
+
+const MAX_REQUEST_BYTES = 64 * 1024;
+const READ_CHUNK_BYTES = 8192;
+const MAX_ID_LENGTH = 128;
+const MAX_NAME_LENGTH = 512;
+const MAX_PATH_LENGTH = 4096;
+const MAX_SOCKET_PATH_BYTES = 107;
+const S_IFMT = 0o170000;
+const S_IFSOCK = 0o140000;
+
+function queryAttributes(path, attributes) {
+  return Gio.File.new_for_path(path).query_info(attributes, Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+}
+
+function setUnixMode(path, mode) {
+  Gio.File.new_for_path(path).set_attribute_uint32("unix::mode", mode, Gio.FileQueryInfoFlags.NONE, null);
+}
+
+// The socket directory is the trust boundary for local IPC: only the owning
+// user may traverse it, so another local account can neither connect to the
+// backend nor squat the socket path.
+function ensurePrivateDirectory(path) {
+  GLib.mkdir_with_parents(path, 0o700);
+  const info = queryAttributes(path, "standard::type,owner::user");
+  if (info.get_file_type() !== Gio.FileType.DIRECTORY) throw new Error(`Not a private directory: ${path}`);
+  if (info.get_attribute_string("owner::user") !== GLib.get_user_name()) throw new Error(`Not owned by the current user: ${path}`);
+  setUnixMode(path, 0o700);
+  const mode = queryAttributes(path, "unix::mode").get_attribute_uint32("unix::mode") & 0o777;
+  if ((mode & 0o077) !== 0) throw new Error(`Could not secure directory: ${path}`);
+}
+
+function defaultSocketDirectory() {
+  const runtime = GLib.getenv("XDG_RUNTIME_DIR");
+  if (runtime) return runtime;
+  // The shell UI mirrors this fallback with $TMPDIR (or /tmp) and $USER, so
+  // both sides derive the same path when the session has no runtime dir.
+  return GLib.build_filenamev([GLib.get_tmp_dir(), `relaxy-${GLib.get_user_name()}`]);
+}
+
+function defaultSocketPath() {
+  return GLib.build_filenamev([defaultSocketDirectory(), `relaxy-${GLib.get_user_name()}.sock`]);
+}
+
+const ACTION_SCHEMAS = {
+  "get-state": {},
+  "play": {},
+  "pause": {},
+  "toggle-playing": {},
+  "stop": {},
+  "set-master-volume": { volume: "number" },
+  "set-sound-volume": { soundId: "id", volume: "number" },
+  "toggle-sound": { soundId: "id", playing: "boolean" },
+  "set-preset": { presetId: "id" },
+  "next-preset": {},
+  "previous-preset": {},
+  "reset-volumes": {},
+  "add-preset": { name: "name" },
+  "rename-preset": { presetId: "id", name: "name" },
+  "remove-preset": { presetId: "id" },
+  "add-custom-sound": { path: "path", name: "name" },
+  "rename-custom-sound": { soundId: "id", name: "name" },
+  "remove-custom-sound": { soundId: "id" },
+  "set-start-paused": { value: "boolean" },
+  "set-inhibit-suspension": { value: "boolean" },
+  "set-hide-inactive": { value: "boolean" },
+  "dismiss-error": {},
+};
+
+function checkFieldString(name, value, max) {
+  if (typeof value !== "string" || value.length === 0 || value.length > max) throw new Error(`Invalid ${name}`);
+}
+
+function validateField(name, kind, value) {
+  if (kind === "number") {
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`Invalid ${name}`);
+  } else if (kind === "boolean") {
+    if (typeof value !== "boolean") throw new Error(`Invalid ${name}`);
+  } else if (kind === "id") {
+    checkFieldString(name, value, MAX_ID_LENGTH);
+  } else if (kind === "name") {
+    checkFieldString(name, value, MAX_NAME_LENGTH);
+  } else if (kind === "path") {
+    checkFieldString(name, value, MAX_PATH_LENGTH);
+  }
+}
+
+// Every request is validated before it can change state: unknown actions,
+// unexpected fields, wrong types, and oversized strings are rejected here so
+// a peer that reaches the socket cannot smuggle anything past the schema.
+function validateRequest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid request");
+  let id = value.id;
+  if (id === undefined || id === null || id === "") id = null;
+  else if (typeof id !== "string" || id.length > MAX_ID_LENGTH) throw new Error("Invalid request id");
+  const action = value.action;
+  if (typeof action !== "string" || !Object.hasOwn(ACTION_SCHEMAS, action)) throw new Error(`Unknown action: ${action}`);
+  const payload = value.payload === undefined || value.payload === null ? {} : value.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid payload");
+  const schema = ACTION_SCHEMAS[action];
+  const schemaKeys = Object.keys(schema);
+  const payloadKeys = Object.keys(payload);
+  if (payloadKeys.length !== schemaKeys.length || !payloadKeys.every((key) => Object.hasOwn(schema, key))) {
+    throw new Error("Invalid payload fields");
+  }
+  for (const [key, kind] of Object.entries(schema)) validateField(key, kind, payload[key]);
+  return { id, action, payload };
 }
 
 class MprisAdapter {
@@ -233,6 +341,7 @@ export class Backend {
     this.socketPath = socketPath;
     this.settingsPath = settingsPath;
     this.statusPath = statusPath;
+    ensurePrivateDirectory(GLib.path_get_dirname(this.settingsPath));
     this.state = loadState(settingsPath);
     this.clients = new Set();
     this.loop = new GLib.MainLoop(null, false);
@@ -255,10 +364,8 @@ export class Backend {
   }
 
   start() {
-    GLib.mkdir_with_parents(GLib.path_get_dirname(this.socketPath), 0o700);
-    try { GLib.unlink(this.socketPath); } catch (_error) { /* The socket may not exist. */ }
-    const address = Gio.UnixSocketAddress.new(this.socketPath);
-    this.server.add_address(address, Gio.SocketType.STREAM, Gio.SocketProtocol.DEFAULT, null);
+    ensurePrivateDirectory(GLib.path_get_dirname(this.socketPath));
+    this.bindSocket();
     this.server.connect("incoming", (_service, connection) => {
       this.accept(connection);
       return true;
@@ -272,23 +379,111 @@ export class Backend {
     this.loop.run();
   }
 
-  accept(connection) {
-    const client = { connection, input: Gio.DataInputStream.new(connection.get_input_stream()), output: connection.get_output_stream() };
-    this.clients.add(client);
-    const readNext = () => {
-      client.input.read_line_async(GLib.PRIORITY_DEFAULT, null, (_stream, result) => {
-        try {
-          const [line] = client.input.read_line_finish_utf8(result);
-          if (line === null) return this.closeClient(client);
-          this.handleRequest(client, JSON.parse(line));
-          readNext();
-        } catch (error) {
-          this.respond(client, { type: "error", ok: false, error: error.message });
-          this.closeClient(client);
-        }
-      });
+  // GIO reports sockets as SPECIAL, so socket identity is read from the unix
+  // mode bits instead of the generic file type.
+  socketIdentity() {
+    const info = queryAttributes(this.socketPath, "owner::user,unix::mode");
+    return {
+      owner: info.get_attribute_string("owner::user"),
+      mode: info.get_attribute_uint32("unix::mode"),
     };
-    readNext();
+  }
+
+  bindSocket() {
+    if (bytes(this.socketPath).length > MAX_SOCKET_PATH_BYTES) throw new Error(`Socket path is too long: ${this.socketPath}`);
+    const socketFile = Gio.File.new_for_path(this.socketPath);
+    let existing = null;
+    try {
+      existing = this.socketIdentity();
+    } catch (error) {
+      if (!error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND)) throw error;
+    }
+    if (existing) {
+      // Never unlink a foreign file: in a shared directory that would be a
+      // squatting vector, and in a private directory it signals corruption.
+      if ((existing.mode & S_IFMT) !== S_IFSOCK || existing.owner !== GLib.get_user_name()) {
+        throw new Error(`Refusing to replace unexpected file: ${this.socketPath}`);
+      }
+      socketFile.delete(null);
+    }
+    const address = Gio.UnixSocketAddress.new(this.socketPath);
+    this.server.add_address(address, Gio.SocketType.STREAM, Gio.SocketProtocol.DEFAULT, null);
+    setUnixMode(this.socketPath, 0o600);
+    const created = this.socketIdentity();
+    if ((created.mode & S_IFMT) !== S_IFSOCK) throw new Error(`Socket was not created: ${this.socketPath}`);
+    if (created.owner !== GLib.get_user_name()) throw new Error(`Socket is not owned by the current user: ${this.socketPath}`);
+    if ((created.mode & 0o777) !== 0o600) throw new Error(`Could not secure socket: ${this.socketPath}`);
+  }
+
+  accept(connection) {
+    const client = { connection, input: connection.get_input_stream(), output: connection.get_output_stream(), pending: new Uint8Array(0) };
+    this.clients.add(client);
+    this.readMore(client);
+  }
+
+  // Requests are read with an explicit byte ceiling so a peer cannot exhaust
+  // backend memory with an unbounded line. Oversized or undecodable input
+  // closes the connection without a state-changing response.
+  readMore(client) {
+    client.input.read_bytes_async(READ_CHUNK_BYTES, GLib.PRIORITY_DEFAULT, null, (stream, result) => {
+      if (!this.clients.has(client)) return;
+      let chunk;
+      try {
+        chunk = stream.read_bytes_finish(result).get_data();
+      } catch (_error) {
+        this.closeClient(client);
+        return;
+      }
+      if (chunk.length === 0) {
+        this.closeClient(client);
+        return;
+      }
+      const pending = new Uint8Array(client.pending.length + chunk.length);
+      pending.set(client.pending, 0);
+      pending.set(chunk, client.pending.length);
+      client.pending = pending;
+      if (client.pending.length > MAX_REQUEST_BYTES + READ_CHUNK_BYTES) {
+        printerr("relaxy: closing oversized request");
+        this.closeClient(client);
+        return;
+      }
+      let newline = client.pending.indexOf(10);
+      while (newline >= 0) {
+        const lineBytes = client.pending.subarray(0, newline);
+        client.pending = client.pending.subarray(newline + 1);
+        if (lineBytes.length > MAX_REQUEST_BYTES) {
+          printerr("relaxy: closing oversized request");
+          this.closeClient(client);
+          return;
+        }
+        this.handleLine(client, lineBytes);
+        if (!this.clients.has(client)) return;
+        newline = client.pending.indexOf(10);
+      }
+      this.readMore(client);
+    });
+  }
+
+  handleLine(client, lineBytes) {
+    let text = "";
+    try {
+      let end = lineBytes.length;
+      if (end > 0 && lineBytes[end - 1] === 13) end -= 1;
+      text = new TextDecoder("utf-8", { fatal: true }).decode(lineBytes.subarray(0, end));
+    } catch (_error) {
+      this.respond(client, { type: "error", ok: false, error: "Invalid request encoding" });
+      this.closeClient(client);
+      return;
+    }
+    let request;
+    try {
+      request = validateRequest(JSON.parse(text));
+    } catch (error) {
+      this.respond(client, { type: "error", ok: false, error: error.message });
+      this.closeClient(client);
+      return;
+    }
+    this.handleRequest(client, request);
   }
 
   closeClient(client) {
@@ -324,10 +519,7 @@ export class Backend {
   writeStatus() {
     const document = { schemaVersion: 1, lastError: this.lastError };
     try {
-      GLib.mkdir_with_parents(GLib.path_get_dirname(this.statusPath), 0o700);
-      const temporaryPath = `${this.statusPath}.tmp-${GLib.get_real_time()}`;
-      GLib.file_set_contents(temporaryPath, `${JSON.stringify(document, null, 2)}\n`);
-      GLib.rename(temporaryPath, this.statusPath);
+      writePrivateFile(this.statusPath, `${JSON.stringify(document, null, 2)}\n`);
     } catch (error) {
       printerr(`relaxy: could not write the status file: ${error.message}`);
     }
@@ -451,12 +643,34 @@ function argumentsObject() {
     else if (argument === "--assets") result.assetDirectory = ARGV[++index];
   }
   if (!result.socketPath) {
-    const runtime = GLib.getenv("XDG_RUNTIME_DIR") || "/tmp";
-    result.socketPath = GLib.build_filenamev([runtime, `relaxy-${GLib.get_user_name()}.sock`]);
+    result.socketPath = defaultSocketPath();
   }
   if (!result.assetDirectory) result.assetDirectory = GLib.build_filenamev([GLib.path_get_dirname(import.meta.url.replace("file://", "")), "..", "assets", "sounds"]);
   result.statusPath = `${result.socketPath.replace(/\.sock$/, "")}.status.json`;
   return result;
+}
+
+// The one-shot client bounds the response the same way the server bounds
+// requests, so a rogue peer on an explicitly chosen socket cannot exhaust it.
+function readResponseLine(input) {
+  let pending = new Uint8Array(0);
+  for (;;) {
+    const newline = pending.indexOf(10);
+    if (newline >= 0) {
+      if (newline > MAX_REQUEST_BYTES) throw new Error("Response is too large");
+      return new TextDecoder("utf-8", { fatal: true }).decode(pending.subarray(0, newline));
+    }
+    if (pending.length > MAX_REQUEST_BYTES + READ_CHUNK_BYTES) throw new Error("Response is too large");
+    const chunk = input.read_bytes(READ_CHUNK_BYTES, null).get_data();
+    if (chunk.length === 0) {
+      if (pending.length === 0) return null;
+      throw new Error("Incomplete response");
+    }
+    const next = new Uint8Array(pending.length + chunk.length);
+    next.set(pending, 0);
+    next.set(chunk, pending.length);
+    pending = next;
+  }
 }
 
 const options = argumentsObject();
@@ -467,8 +681,7 @@ if (options.mode === "command") {
     const output = connection.get_output_stream();
     output.write_all(bytes(jsonLine(options.command)), null);
     output.flush(null);
-    const input = Gio.DataInputStream.new(connection.get_input_stream());
-    const [line] = input.read_line_utf8(null);
+    const line = readResponseLine(connection.get_input_stream());
     print(line || jsonLine({ ok: false, error: "No response from Relaxy backend" }));
   } catch (error) {
     print(jsonLine({ ok: false, error: error.message }));

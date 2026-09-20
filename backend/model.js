@@ -1,3 +1,4 @@
+import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 
 export const STATE_VERSION = 1;
@@ -119,13 +120,23 @@ export function loadState(path = statePath()) {
   }
 }
 
-export function saveState(state, path = statePath()) {
-  const normalized = normalizeState(state);
+// State and status files are written owner-only: the process umask is not
+// trusted to keep another local account from reading them.
+export function writePrivateFile(path, text) {
   const directory = GLib.path_get_dirname(path);
   GLib.mkdir_with_parents(directory, 0o700);
   const temporaryPath = `${path}.tmp-${GLib.get_real_time()}`;
-  GLib.file_set_contents(temporaryPath, `${JSON.stringify(normalized, null, 2)}\n`);
+  GLib.file_set_contents(temporaryPath, text);
+  Gio.File.new_for_path(temporaryPath).set_attribute_uint32("unix::mode", 0o600, Gio.FileQueryInfoFlags.NONE, null);
   GLib.rename(temporaryPath, path);
+  const mode = Gio.File.new_for_path(path).query_info("unix::mode", Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null)
+    .get_attribute_uint32("unix::mode") & 0o777;
+  if ((mode & 0o077) !== 0) throw new Error(`Could not secure file: ${path}`);
+}
+
+export function saveState(state, path = statePath()) {
+  const normalized = normalizeState(state);
+  writePrivateFile(path, `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
 }
 

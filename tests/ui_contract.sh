@@ -31,6 +31,8 @@ grep -q 'Catalog.version' "$repo_dir/ui/Panel.qml"
 grep -q 'Catalog.license' "$repo_dir/ui/Panel.qml"
 grep -q 'SOUNDS_LICENSES.md' "$repo_dir/ui/Panel.qml"
 grep -q 'statusPath' "$repo_dir/ui/Panel.qml"
+grep -q 'XDG_RUNTIME_DIR' "$repo_dir/ui/Panel.qml"
+grep -q 'TMPDIR' "$repo_dir/ui/Panel.qml"
 grep -q 'lastError' "$repo_dir/ui/Panel.qml"
 grep -q 'dismiss-error' "$repo_dir/ui/Panel.qml"
 

@@ -14,7 +14,10 @@ Item {
 
   readonly property string pluginDirectory: localPath(Qt.resolvedUrl("."));
   readonly property string stateDirectory: Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state");
-  readonly property string runtimeDirectory: Quickshell.env("XDG_RUNTIME_DIR") || "/tmp";
+  // Mirrors the backend socket fallback: $XDG_RUNTIME_DIR when set, otherwise
+  // a per-user directory under $TMPDIR that the backend creates and verifies
+  // as 0700 before binding the 0600 socket inside it.
+  readonly property string runtimeDirectory: Quickshell.env("XDG_RUNTIME_DIR") || ((Quickshell.env("TMPDIR") || "/tmp") + "/relaxy-" + (Quickshell.env("USER") || "user"));
   readonly property string socketPath: runtimeDirectory + "/relaxy-" + (Quickshell.env("USER") || "user") + ".sock";
   readonly property string statePath: stateDirectory + "/relaxy/state.json";
 

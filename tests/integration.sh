@@ -53,6 +53,8 @@ for _attempt in $(seq 1 50); do
   sleep 0.1
 done
 [[ -S "$socket_path" ]] || { sed -n '1,120p' "$runtime_dir/backend.log"; exit 1; }
+[[ "$(stat -c %a "$socket_path")" == "600" ]] || { echo "backend socket must be mode 0600" >&2; exit 1; }
+[[ "$(stat -c %a "$runtime_dir")" == "700" ]] || { echo "backend socket directory must be mode 0700" >&2; exit 1; }
 
 command_response() {
   gjs -m "$repo_dir/backend/relaxy.js" --command "$1" --socket "$socket_path"
@@ -94,6 +96,7 @@ rg -q 'relaxy: sound .* error:' "$runtime_dir/backend.log"
 response="$(command_response '{"id":"integration-dismiss","action":"dismiss-error","payload":{}}')"
 jq -e '.ok == true' <<<"$response" >/dev/null
 jq -e '.lastError == null' "$status_path" >/dev/null
+[[ "$(stat -c %a "$status_path")" == "600" ]] || { echo "backend status file must be mode 0600" >&2; exit 1; }
 
 response="$(command_response "{\"id\":\"integration-hide\",\"action\":\"set-hide-inactive\",\"payload\":{\"value\":true}}")"
 jq -e '.ok == true and .state.presets[1].hideInactive == true' <<<"$response" >/dev/null
@@ -108,6 +111,45 @@ fi
 
 response="$(command_response '{"id":"integration-reset","action":"reset-volumes","payload":{}}')"
 jq -e '.ok == true and (.state.presets[1].volumes | length) == 0 and (.state.presets[1].mutes | length) == 0' <<<"$response" >/dev/null
+[[ "$(stat -c %a "$state_path")" == "600" ]] || { echo "backend state file must be mode 0600" >&2; exit 1; }
+
+response="$(command_response '{"id":"integration-bad-type","action":"set-master-volume","payload":{"volume":"loud"}}')"
+jq -e '.ok == false' <<<"$response" >/dev/null
+
+response="$(command_response '{"id":"integration-extra-field","action":"set-master-volume","payload":{"volume":0.5,"extra":true}}')"
+jq -e '.ok == false' <<<"$response" >/dev/null
+
+response="$(command_response '{"id":"integration-unknown","action":"delete-everything","payload":{}}')"
+jq -e '.ok == false' <<<"$response" >/dev/null
+
+response="$(command_response '{"id":"integration-bad-shape","action":"get-state","payload":[]}')"
+jq -e '.ok == false' <<<"$response" >/dev/null
+
+if ! python3 - "$socket_path" <<'EOF'
+import socket
+import sys
+path = sys.argv[1]
+peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+peer.connect(path)
+peer.sendall(b"A" * 200000 + b"\n")
+peer.settimeout(5)
+try:
+    data = peer.recv(4096)
+except (ConnectionResetError, BrokenPipeError, OSError) as error:
+    print(f"oversized request rejected ({type(error).__name__})")
+    sys.exit(0)
+if data:
+    print(f"unexpected response to oversized request: {data[:64]!r}")
+    sys.exit(1)
+print("oversized request rejected (connection closed)")
+EOF
+then
+  echo "backend must reject oversized requests" >&2
+  exit 1
+fi
+
+response="$(get_state)"
+jq -e '.ok == true and .state.masterVolume == 0.35' <<<"$response" >/dev/null
 
 response="$(get_state)"
 jq -e --arg custom_id "$custom_id" '.state.masterVolume == 0.35 and .state.customSounds[0].id == $custom_id and .state.presets[1].hideInactive == true' <<<"$response" >/dev/null

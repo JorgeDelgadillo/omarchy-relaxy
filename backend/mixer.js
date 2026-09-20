@@ -11,6 +11,9 @@ function selectAudioSink() {
   const requested = GLib.getenv("RELAXY_AUDIO_SINK");
   const candidates = requested ? [requested] : ["pipewiresink", "autoaudiosink", "pulsesink", "alsasink"];
   for (const candidate of candidates) {
+    // The override flows into a Gst.parse_launch() description, so it must be
+    // a bare element name and nothing that parses as pipeline syntax.
+    if (!/^[A-Za-z0-9_-]+$/.test(candidate)) throw new Error(`Invalid GStreamer element name: ${candidate}`);
     if (Gst.ElementFactory.find(candidate)) return candidate;
   }
   throw new Error(`Could not find a GStreamer audio sink (tried: ${candidates.join(", ")})`);

@@ -109,11 +109,16 @@ change the master volume; next and previous move between presets.
 - Bundled audio: `assets/sounds/` inside the installed plugin.
 - Persistent state: `$XDG_STATE_HOME/relaxy/state.json`, falling back to
   `$HOME/.local/state/relaxy/state.json`.
-- Backend socket: `$XDG_RUNTIME_DIR/relaxy-$USER.sock`.
-- Runtime status: `$XDG_RUNTIME_DIR/relaxy-$USER.status.json`.
+- Backend socket: `relaxy-$USER.sock` inside a verified private directory:
+  `$XDG_RUNTIME_DIR` when available, otherwise `relaxy-$USER` under `$TMPDIR`
+  (or `/tmp`).
+- Runtime status: `relaxy-$USER.status.json` next to the socket.
 
-The socket and the status file are local to the user and are removed when the
-backend exits. State and status writes use a temporary file followed by an
+The socket directory is created and verified as user-owned 0700, the socket
+itself is enforced as 0600, and a stale non-socket file at the socket path
+refuses to start rather than being replaced. The socket and the status file
+are local to the user and are removed when the backend exits. State and
+status writes are owner-only (0600) and use a temporary file followed by an
 atomic rename.
 
 ## Development and validation
@@ -143,6 +148,14 @@ Unix sockets:
 
 ```bash
 ./tests/integration.sh
+```
+
+Run the socket security test, which covers the runtime-directory fallback,
+socket and file permissions, request size limits, payload validation, and
+refusal of unexpected files at the socket path:
+
+```bash
+./tests/socket_security.sh
 ```
 
 Contributor and agent working context, including the GStreamer invariants that

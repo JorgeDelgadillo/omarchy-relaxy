@@ -86,6 +86,7 @@ RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
 ./tests/ui_contract.sh
 ./tests/service_contract.sh
 ./tests/integration.sh
+./tests/socket_security.sh
 ```
 
 `tests/mixer.test.js` generates a short OGG file and drives recovery in a
