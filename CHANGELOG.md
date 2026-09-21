@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 - 2026-09-21
 
 - Fixed first-run silence: enabling a sound or raising its volume starts
   playback, and the panel play control uses play/pause icons instead of add.
@@ -8,6 +8,7 @@
   socket; mixer sync now runs after the response, and command I/O times out.
 - Replaced leftover Relaxy processes on backend start so a reload or
   uninstall cannot leave a frozen mixer occupying the socket.
+- Added a root marketplace preview and a longer listing description.
 
 ## 0.1.0 - 2026-09-17
 

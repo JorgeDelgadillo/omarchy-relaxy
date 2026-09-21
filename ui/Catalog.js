@@ -1,6 +1,6 @@
 .pragma library
 
-var version = "0.1.0";
+var version = "0.1.1";
 var license = "GPL-3.0-or-later";
 var author = "jdelgadillo";
 
