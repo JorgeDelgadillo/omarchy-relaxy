@@ -441,8 +441,9 @@ Item {
         }
 
         Button {
-          iconText: "󰐕"
+          iconText: root.barGlyph
           foreground: root.bar ? root.bar.foreground : "white"
+          tooltipText: root.mixerState.playing ? "Pause" : "Play"
           onClicked: root.sendAction("toggle-playing", {})
         }
       }

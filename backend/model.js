@@ -41,7 +41,7 @@ function normalizePreset(raw, index) {
 export function defaultState() {
   return {
     schemaVersion: STATE_VERSION,
-    playing: true,
+    playing: false,
     masterVolume: 1,
     startPaused: false,
     inhibitSuspension: false,
@@ -153,6 +153,7 @@ export function setSoundVolume(state, soundId, volume) {
   const preset = activePreset(state);
   preset.volumes[soundId] = clampVolume(volume);
   preset.mutes[soundId] = preset.volumes[soundId] <= 0;
+  if (!preset.mutes[soundId]) state.playing = true;
   return state;
 }
 
@@ -160,6 +161,7 @@ export function setSoundPlaying(state, soundId, playing) {
   const preset = activePreset(state);
   preset.mutes[soundId] = !Boolean(playing);
   if (playing && clampVolume(preset.volumes[soundId]) <= 0) preset.volumes[soundId] = DEFAULT_VOLUME;
+  if (playing) state.playing = true;
   return state;
 }
 

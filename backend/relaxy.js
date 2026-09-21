@@ -76,6 +76,8 @@ const MAX_ID_LENGTH = 128;
 const MAX_NAME_LENGTH = 512;
 const MAX_PATH_LENGTH = 4096;
 const MAX_SOCKET_PATH_BYTES = 107;
+const COMMAND_TIMEOUT_SECONDS = 8;
+const STALE_BACKEND_WAIT_US = 2 * 1000 * 1000;
 const S_IFMT = 0o170000;
 const S_IFSOCK = 0o140000;
 
@@ -110,6 +112,82 @@ function defaultSocketDirectory() {
 
 function defaultSocketPath() {
   return GLib.build_filenamev([defaultSocketDirectory(), `relaxy-${GLib.get_user_name()}.sock`]);
+}
+
+function currentPid() {
+  try {
+    return Number(GLib.file_read_link("/proc/self"));
+  } catch (_error) {
+    return 0;
+  }
+}
+
+function processCommandLine(pid) {
+  try {
+    const [, contents] = GLib.file_get_contents(`/proc/${pid}/cmdline`);
+    const text = contents instanceof Uint8Array ? new TextDecoder().decode(contents) : String(contents);
+    return text.replace(/\0/g, " ");
+  } catch (_error) {
+    return "";
+  }
+}
+
+function isRelaxyProcessPid(pid) {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === currentPid()) return false;
+  return processCommandLine(pid).includes("relaxy.js");
+}
+
+function sendSignal(pid, signalName) {
+  try {
+    GLib.spawn_sync(null, ["kill", `-${signalName}`, String(pid)], null, GLib.SpawnFlags.SEARCH_PATH, null);
+  } catch (_error) {
+    /* The process may already be gone. */
+  }
+}
+
+function listProcessIds() {
+  const pids = [];
+  try {
+    const enumerator = Gio.File.new_for_path("/proc").enumerate_children("standard::name", Gio.FileQueryInfoFlags.NONE, null);
+    let info;
+    while ((info = enumerator.next_file(null))) {
+      const pid = Number(info.get_name());
+      if (Number.isInteger(pid) && pid > 1) pids.push(pid);
+    }
+  } catch (_error) {
+    /* /proc may be unavailable in restricted environments. */
+  }
+  return pids;
+}
+
+function staleRelaxyPids(statusPath, socketPath) {
+  const pids = new Set();
+  try {
+    const [, contents] = GLib.file_get_contents(statusPath);
+    const text = contents instanceof Uint8Array ? new TextDecoder().decode(contents) : String(contents);
+    const pid = Number(JSON.parse(text)?.pid);
+    if (isRelaxyProcessPid(pid) && !processCommandLine(pid).includes("--command")) pids.add(pid);
+  } catch (_error) {
+    /* A missing or corrupt status file just means there is no recorded pid. */
+  }
+  if (socketPath) {
+    for (const pid of listProcessIds()) {
+      if (!isRelaxyProcessPid(pid)) continue;
+      if (processCommandLine(pid).includes(socketPath)) pids.add(pid);
+    }
+  }
+  return [...pids];
+}
+
+// Plugin reloads and uninstalls can leave a previous GJS backend alive. If it
+// is stuck inside a GStreamer state change, SIGTERM never reaches the main
+// loop, so a new instance replaces it with TERM then KILL before binding.
+function replaceStaleBackend(statusPath, socketPath) {
+  const pids = staleRelaxyPids(statusPath, socketPath);
+  for (const pid of pids) sendSignal(pid, "TERM");
+  const deadline = GLib.get_monotonic_time() + STALE_BACKEND_WAIT_US;
+  while (GLib.get_monotonic_time() < deadline && pids.some((pid) => isRelaxyProcessPid(pid))) GLib.usleep(50 * 1000);
+  for (const pid of pids) if (isRelaxyProcessPid(pid)) sendSignal(pid, "KILL");
 }
 
 const ACTION_SCHEMAS = {
@@ -348,6 +426,8 @@ export class Backend {
     this.inhibitor = null;
     this.responseClient = null;
     this.lastError = null;
+    this.syncSource = 0;
+    this.pid = currentPid();
     this.powerMonitor = Gio.PowerProfileMonitor.dup_default();
     if (applyLaunchPlayback(this.state, powerSaverEnabled(this.powerMonitor))) {
       saveState(this.state, this.settingsPath);
@@ -365,17 +445,21 @@ export class Backend {
 
   start() {
     ensurePrivateDirectory(GLib.path_get_dirname(this.socketPath));
+    replaceStaleBackend(this.statusPath, this.socketPath);
     this.bindSocket();
     this.server.connect("incoming", (_service, connection) => {
       this.accept(connection);
       return true;
     });
     this.server.start();
-    this.sync();
     this.writeStatus();
     this.broadcast({ type: "ready", state: this.state });
     GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, 15, () => { this.stop(); return GLib.SOURCE_REMOVE; });
     GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, 2, () => { this.stop(); return GLib.SOURCE_REMOVE; });
+    // Apply the mixer after the main loop is running. pipewiresink state
+    // changes can wait for GLib dispatch, so doing this before loop.run()
+    // (or inside a request handler) can freeze the Unix socket.
+    this.scheduleSync();
     this.loop.run();
   }
 
@@ -517,7 +601,7 @@ export class Backend {
   }
 
   writeStatus() {
-    const document = { schemaVersion: 1, lastError: this.lastError };
+    const document = { schemaVersion: 1, pid: this.pid, lastError: this.lastError };
     try {
       writePrivateFile(this.statusPath, `${JSON.stringify(document, null, 2)}\n`);
     } catch (error) {
@@ -593,9 +677,18 @@ export class Backend {
 
   persistAndSync() {
     saveState(this.state, this.settingsPath);
-    this.sync();
     this.mpris.emitChanges();
     this.broadcast({ type: "state-changed" });
+    this.scheduleSync();
+  }
+
+  scheduleSync() {
+    if (this.syncSource) return;
+    this.syncSource = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      this.syncSource = 0;
+      this.sync();
+      return GLib.SOURCE_REMOVE;
+    });
   }
 
   sync() {
@@ -622,6 +715,10 @@ export class Backend {
   }
 
   stop() {
+    if (this.syncSource) {
+      GLib.source_remove(this.syncSource);
+      this.syncSource = 0;
+    }
     this.stopInhibitor();
     this.mixer.stop();
     this.mpris.dispose();
@@ -677,7 +774,9 @@ const options = argumentsObject();
 if (options.mode === "command") {
   try {
     const client = new Gio.SocketClient();
+    client.timeout = COMMAND_TIMEOUT_SECONDS;
     const connection = client.connect(Gio.UnixSocketAddress.new(options.socketPath), null);
+    connection.get_socket().set_timeout(COMMAND_TIMEOUT_SECONDS);
     const output = connection.get_output_stream();
     output.write_all(bytes(jsonLine(options.command)), null);
     output.flush(null);

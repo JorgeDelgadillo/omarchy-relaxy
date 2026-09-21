@@ -96,9 +96,9 @@ the panel, while middle click toggles playback without opening it. The panel
 contains the master control, per-sound sliders, preset controls, custom sound
 import, settings, and attribution information.
 
-Relaxy starts the bundled tracks muted at zero volume. Select a sound row to
-enable it, then adjust its volume. A preset stores the active sound levels,
-mutes, and inactive-group preference.
+Relaxy starts paused with the bundled tracks muted at zero volume. Select a
+sound row or raise its slider to enable it and start playback. A preset stores
+the active sound levels, mutes, and inactive-group preference.
 
 The backend exposes `org.mpris.MediaPlayer2.Relaxy` on
 `/org/mpris/MediaPlayer2`. Desktop media controls can play, pause, stop, and
@@ -180,10 +180,12 @@ upstream project and its own licensing terms apply to its source and assets.
 ## Troubleshooting
 
 If the icon is absent, verify that the plugin is enabled and that its entry is
-present in the bar layout. If playback is silent, check that GStreamer can
-load an audio sink and that another application has not claimed an exclusive
-device. Run the mixer test with `RELAXY_AUDIO_SINK=fakesink` to isolate the
-mixer from the physical audio device.
+present in the bar layout. If playback is silent, click a sound to enable it
+or use the panel play control; a paused mixer with raised sliders produces no
+audio. Check that GStreamer can load an audio sink and that another
+application has not claimed an exclusive device. Run the mixer test with
+`RELAXY_AUDIO_SINK=fakesink` to isolate the mixer from the physical audio
+device.
 
 When several sounds are active, a finite recording can reach end-of-stream
 before the other branches. Relaxy schedules a safe pipeline recovery and

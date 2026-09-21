@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Fixed first-run silence: enabling a sound or raising its volume starts
+  playback, and the panel play control uses play/pause icons instead of add.
+- Fixed a hung one-shot command client when GStreamer blocked the backend
+  socket; mixer sync now runs after the response, and command I/O times out.
+- Replaced leftover Relaxy processes on backend start so a reload or
+  uninstall cannot leave a frozen mixer occupying the socket.
+
 ## 0.1.0 - 2026-09-17
 
 - Added an Omarchy schema-version-1 bar widget and persistent service.

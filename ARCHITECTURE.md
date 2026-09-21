@@ -56,11 +56,16 @@ written owner-only (0600) through a temporary file followed by an atomic
 rename.
 
 The backend writes `$XDG_RUNTIME_DIR/relaxy-$USER.status.json`, derived from
-the socket path, with the last mixer error (`soundId`, `message`, `debug`, and
-`at`) or `null`. The panel watches that file and shows a dismissible warning,
-which keeps error reporting out of the persistent state document. Errors are
-also printed to standard error, where `Service.qml` forwards them to the shell
-log.
+the socket path, with the backend pid and the last mixer error (`soundId`,
+`message`, `debug`, and `at`) or `null`. On startup it replaces any leftover
+Relaxy process still bound to that socket. The panel watches that file and
+shows a dismissible warning, which keeps error reporting out of the persistent
+state document. Errors are also printed to standard error, where `Service.qml`
+forwards them to the shell log.
+
+State mutations persist and respond immediately. Mixer topology changes are
+scheduled on the GLib main loop so a blocking `pipewiresink` state change
+cannot stall the Unix socket or freeze the one-shot command client.
 
 ## Audio mixer
 
@@ -70,7 +75,8 @@ master `volume`, and an automatic sink. File sounds use finite
 with the corresponding GStreamer wave enum. Branches are created only for
 unmuted tracks with a positive volume, which keeps idle playback inexpensive.
 
-The master volume is applied after the mixer. Playback state maps to pipeline
+The master volume is applied after the mixer. Playback starts paused until the
+user enables a sound or raises its volume. Playback state then maps to pipeline
 `PLAYING` or `PAUSED`, while an empty mixer returns the pipeline to `NULL`.
 GStreamer errors are associated with their sound id and remove only the bad
 branch so another track can continue playing. The error rebuild is scheduled on

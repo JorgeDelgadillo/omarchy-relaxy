@@ -95,7 +95,7 @@ rg -q 'relaxy: sound .* error:' "$runtime_dir/backend.log"
 
 response="$(command_response '{"id":"integration-dismiss","action":"dismiss-error","payload":{}}')"
 jq -e '.ok == true' <<<"$response" >/dev/null
-jq -e '.lastError == null' "$status_path" >/dev/null
+jq -e '.lastError == null and (.pid | type == "number" and . > 1)' "$status_path" >/dev/null
 [[ "$(stat -c %a "$status_path")" == "600" ]] || { echo "backend status file must be mode 0600" >&2; exit 1; }
 
 response="$(command_response "{\"id\":\"integration-hide\",\"action\":\"set-hide-inactive\",\"payload\":{\"value\":true}}")"

@@ -61,6 +61,12 @@ operation to the GLib main loop and rebuilds `activeSpecs`. Keep the recovery
 coalesced to one pending idle source, cancel it when disposing the pipeline,
 and do not substitute `lastSpecs` for `activeSpecs`.
 
+The same deferral applies to command handling. `persistAndSync()` must save
+state and respond first, then `scheduleSync()` applies the mixer on an idle
+source. Calling `mixer.sync()` inside `handleRequest()` can freeze the Unix
+socket while `pipewiresink` waits for GLib dispatch. One-shot `--command`
+clients time out instead of waiting forever.
+
 Because the audiomixer only forwards EOS when every input has ended, finite
 files inside a mix are detected by `checkBranchEnds()`, a GLib timeout that
 watches file branch positions and durations on the main loop. Do not replace it
@@ -110,4 +116,6 @@ The current recovery behavior was introduced in these local commits:
 
 When debugging a future regression, first check whether a GStreamer bus
 callback is performing synchronous state work and whether commands sent to the
-Unix socket still receive responses.
+Unix socket still receive responses. A `--command` client that never exits is
+a sign that mixer synchronization ran on the request path instead of the idle
+source.

@@ -48,7 +48,7 @@ var groups = [
 function defaultState() {
   return {
     schemaVersion: 1,
-    playing: true,
+    playing: false,
     masterVolume: 1,
     startPaused: false,
     inhibitSuspension: false,

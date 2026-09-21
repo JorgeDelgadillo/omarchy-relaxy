@@ -1,6 +1,7 @@
 import GLib from "gi://GLib";
 import {
   DEFAULT_PRESET_ID,
+  DEFAULT_VOLUME,
   addCustomSound,
   addPreset,
   applyLaunchPlayback,
@@ -64,6 +65,18 @@ const keepPlaying = defaultState();
 keepPlaying.playing = true;
 assert(applyLaunchPlayback(keepPlaying) === false, "launch should keep playback when start-paused is off");
 assert(keepPlaying.playing === true, "launch should not pause active playback by default");
+
+const freshInstall = defaultState();
+assert(freshInstall.playing === false, "a new state should start paused until a sound is enabled");
+setSoundPlaying(freshInstall, "rain", true);
+assert(freshInstall.playing === true, "enabling a sound should start playback");
+assert(freshInstall.presets[0].volumes.rain === DEFAULT_VOLUME, "enabling a muted sound should assign the default volume");
+
+const volumeStartsPlayback = defaultState();
+setSoundVolume(volumeStartsPlayback, "rain", 0.4);
+assert(volumeStartsPlayback.playing === true, "raising a sound volume should start playback");
+setSoundVolume(volumeStartsPlayback, "rain", 0);
+assert(volumeStartsPlayback.playing === true, "muting a sound should not change master playback");
 
 const testDirectory = GLib.dir_make_tmp("relaxy-model-test-XXXXXX");
 const testPath = GLib.build_filenamev([testDirectory, "state.json"]);
