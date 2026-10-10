@@ -110,9 +110,37 @@ function testRequestIdsAreUniqueAndStaleResponsesAreIgnored() {
   assert.equal(state.dispatched[1].action, "toggle-sound");
 }
 
+function testCommandFailuresAreActionable() {
+  assert.match(CommandQueue.failureMessage({ id: "request-1", ok: false, error: "Preset name is already in use" }, 0, "request-1"), /already in use/);
+  assert.match(CommandQueue.failureMessage(null, 0, "request-1"), /valid response/i);
+  assert.match(CommandQueue.failureMessage(null, 1, "request-1"), /exited with code 1/i);
+  assert.match(CommandQueue.failureMessage({ id: "request-1", ok: false }, 0, "request-1"), /Try again/i);
+  assert.match(CommandQueue.failureMessage({ id: "stale", ok: true }, 0, "request-1"), /valid response/i);
+  assert.equal(CommandQueue.failureMessage({ id: "request-1", ok: true }, 0, "request-1"), "");
+}
+
+function testEditorSubmissionKeepsDraftUntilMatchingSuccess() {
+  const editor = CommandQueue.createEditorSubmission();
+  const draft = "Rain at night";
+  assert.equal(editor.begin("request-1", draft), true);
+  assert.equal(editor.begin("request-2"), false, "duplicate submits are blocked while pending");
+  assert.equal(editor.isPending(), true);
+  assert.equal(editor.draft(), draft);
+  assert.equal(editor.settle("stale-request", false), null);
+  assert.equal(editor.settle("request-1", false), "retry");
+  assert.equal(editor.draft(), draft, "a failed save must not clear the editor draft");
+  assert.equal(editor.isPending(), false);
+  assert.equal(editor.begin("request-2", editor.draft()), true, "a failed save can be retried");
+  assert.equal(editor.settle("request-2", true), "saved");
+  assert.equal(editor.isPending(), false);
+  assert.equal(editor.draft(), "", "a successful save clears the completed draft");
+}
+
 testMixedActionsStayOrdered();
 testSameTargetVolumesCoalesceWithinPendingSegment();
 testDiscreteActionsAreOrderingBarriers();
 testFailureForOlderRequestDoesNotClearNewerOptimisticValue();
 testRequestIdsAreUniqueAndStaleResponsesAreIgnored();
+testCommandFailuresAreActionable();
+testEditorSubmissionKeepsDraftUntilMatchingSuccess();
 console.log("Command queue behavior tests passed.");

@@ -21,6 +21,10 @@ Item {
   property var commandQueue: null
   property var activeRequest: null
   property var activeResponse: null
+  property var editorSubmission: CommandQueue.createEditorSubmission()
+  property string editorRequestId: ""
+  property string editorErrorText: ""
+  property var commandError: null
   property string editorMode: ""
   property string editorId: ""
   property string confirmAction: ""
@@ -97,11 +101,28 @@ Item {
   }
 
   function finishCommand(request, response) {
+    var failure = CommandQueue.failureMessage(response, 0, request.id);
     if (response && response.state) {
       root.mixerState = response.state;
       root.reconcilePendingVolumes();
     }
-    if (response && !response.ok && request.volumeTarget) {
+    if (failure) {
+      root.commandError = { action: request.action, message: failure };
+      if (root.editorRequestId === request.id) {
+        root.editorSubmission.settle(request.id, false);
+        root.editorRequestId = "";
+        root.editorErrorText = failure;
+      }
+    } else {
+      root.commandError = null;
+      if (root.editorRequestId === request.id) {
+        root.editorSubmission.settle(request.id, true);
+        root.editorRequestId = "";
+        root.editorErrorText = "";
+        editorDialog.close();
+      }
+    }
+    if (failure && request.volumeTarget) {
       if (request.volumeTarget === "master" && root.pendingMasterVolume && root.pendingMasterVolume.requestId === request.id) {
         root.pendingMasterVolume = null;
       } else if (request.volumeTarget.indexOf("sound:") === 0) {
@@ -177,6 +198,8 @@ Item {
   function openPresetEditor(mode, presetId, currentName) {
     root.editorMode = mode;
     root.editorId = presetId || "";
+    root.editorErrorText = "";
+    root.editorSubmission.setDraft(currentName || "");
     editorDialog.title = mode === "rename" ? "Rename preset" : "New preset";
     editorField.text = currentName || "";
     editorDialog.open();
@@ -189,6 +212,8 @@ Item {
   function openCustomSoundEditor(soundId, currentName) {
     root.editorMode = "rename-custom";
     root.editorId = soundId;
+    root.editorErrorText = "";
+    root.editorSubmission.setDraft(currentName || "");
     editorDialog.title = "Rename custom sound";
     editorField.text = currentName || "";
     editorDialog.open();
@@ -199,16 +224,20 @@ Item {
   }
 
   function submitEditor() {
+    if (root.editorSubmission.isPending()) return;
     var name = editorField.text.trim();
     if (!name) return;
+    root.editorErrorText = "";
+    root.commandError = null;
+    var requestId;
     if (root.editorMode === "rename") {
-      root.sendAction("rename-preset", { presetId: root.editorId, name: name });
+      requestId = root.sendAction("rename-preset", { presetId: root.editorId, name: name });
     } else if (root.editorMode === "rename-custom") {
-      root.sendAction("rename-custom-sound", { soundId: root.editorId, name: name });
+      requestId = root.sendAction("rename-custom-sound", { soundId: root.editorId, name: name });
     } else {
-      root.sendAction("add-preset", { name: name });
+      requestId = root.sendAction("add-preset", { name: name });
     }
-    editorDialog.close();
+    if (root.editorSubmission.begin(requestId, name)) root.editorRequestId = requestId;
   }
 
   function confirm(action, payload, title, message) {
@@ -250,8 +279,17 @@ Item {
     id: commandProcess
     onExited: function(exitCode) {
       var response = root.activeResponse;
-      if (exitCode !== 0) response = { id: root.activeRequest ? root.activeRequest.id : "", ok: false };
-      if (root.commandQueue && root.activeRequest) root.commandQueue.complete(root.activeRequest.id, response);
+      var request = root.activeRequest;
+      if (request) {
+        var failure = CommandQueue.failureMessage(response, exitCode, request.id);
+        if (failure) response = {
+          id: request.id,
+          ok: false,
+          error: failure,
+          state: response && response.state ? response.state : null,
+        };
+        if (root.commandQueue) root.commandQueue.complete(request.id, response);
+      }
       stateFile.reload();
     }
     stdout: SplitParser {
@@ -275,9 +313,7 @@ Item {
     id: editorDialog
     width: Style.space(300)
     modal: true
-    standardButtons: QQC2.Dialog.Ok | QQC2.Dialog.Cancel
-
-    onAccepted: root.submitEditor()
+    closePolicy: QQC2.Popup.NoAutoClose
 
     contentItem: Column {
       spacing: Style.space(8)
@@ -292,9 +328,41 @@ Item {
       TextField {
         id: editorField
         width: parent.width
+        enabled: !root.editorSubmission.isPending()
         foreground: root.bar ? root.bar.foreground : "white"
         accent: Color.accent
+        onTextChanged: root.editorSubmission.setDraft(text)
         onAccepted: root.submitEditor()
+      }
+
+      Text {
+        width: parent.width
+        visible: root.editorErrorText.length > 0
+        text: root.editorErrorText
+        textFormat: Text.PlainText
+        color: Color.urgent
+        font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+        font.pixelSize: Style.font.body
+        wrapMode: Text.WordWrap
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+
+        Button {
+          text: "Cancel"
+          foreground: root.bar ? root.bar.foreground : "white"
+          enabled: !root.editorSubmission.isPending()
+          onClicked: editorDialog.close()
+        }
+
+        Button {
+          text: root.editorSubmission.isPending() ? "Saving…" : "Save"
+          foreground: root.bar ? root.bar.foreground : "white"
+          enabled: !root.editorSubmission.isPending() && editorField.text.trim().length > 0
+          onClicked: root.submitEditor()
+        }
       }
     }
   }
@@ -482,6 +550,29 @@ Item {
           foreground: root.bar ? root.bar.foreground : "white"
           tooltipText: "Dismiss error"
           onClicked: root.sendAction("dismiss-error", {})
+        }
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+        visible: root.commandError !== null
+
+        Text {
+          width: parent.width - Style.space(28)
+          text: root.commandError ? root.commandError.message : ""
+          textFormat: Text.PlainText
+          color: Color.urgent
+          font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+
+        Button {
+          iconText: "󰅖"
+          foreground: root.bar ? root.bar.foreground : "white"
+          tooltipText: "Dismiss command error"
+          onClicked: root.commandError = null
         }
       }
 

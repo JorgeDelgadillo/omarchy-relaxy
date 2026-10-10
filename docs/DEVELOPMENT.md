@@ -108,6 +108,12 @@ volume updates may replace an earlier update for the same target only before a
 discrete command barrier; request IDs keep delayed responses from reconciling a
 newer optimistic volume value.
 
+Command failures are shown separately from mixer playback errors. Invalid or
+missing command output and nonzero process exits receive a retry-oriented
+message; backend validation errors retain their specific message. Preset and
+custom-sound editor submissions remain open with their draft intact on failure,
+and the save controls stay disabled until that request settles.
+
 ## Recent audio recovery history
 
 The current recovery behavior was introduced in these local commits:
