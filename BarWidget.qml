@@ -12,6 +12,9 @@ BarWidget {
     if ("bar" in panel) panel.bar = root.bar;
     if ("anchorItem" in panel) panel.anchorItem = button;
     if ("hostWidget" in panel) panel.hostWidget = root;
+    if ("service" in panel && root.bar && root.bar.shell && typeof root.bar.shell.serviceFor === "function") {
+      panel.service = root.bar.shell.serviceFor(root.moduleName);
+    }
   }
 
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false

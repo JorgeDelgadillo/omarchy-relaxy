@@ -154,21 +154,90 @@ jq -e '.ok == true and .state.masterVolume == 0.35' <<<"$response" >/dev/null
 response="$(get_state)"
 jq -e --arg custom_id "$custom_id" '.state.masterVolume == 0.35 and .state.customSounds[0].id == $custom_id and .state.presets[1].hideInactive == true' <<<"$response" >/dev/null
 
-if mpris_status="$(gdbus call --session \
-  --dest org.mpris.MediaPlayer2.Relaxy \
-  --object-path /org/mpris/MediaPlayer2 \
-  --method org.freedesktop.DBus.Properties.Get \
-  org.mpris.MediaPlayer2.Player PlaybackStatus 2>/dev/null)"; then
-  [[ "$mpris_status" == *"Playing"* ]]
-  gdbus call --session \
+if command -v gdbus >/dev/null 2>&1 && [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+  if ! mpris_status="$(gdbus call --session \
     --dest org.mpris.MediaPlayer2.Relaxy \
     --object-path /org/mpris/MediaPlayer2 \
-    --method org.mpris.MediaPlayer2.Player.PlayPause >/dev/null
+    --method org.freedesktop.DBus.Properties.Get \
+    org.mpris.MediaPlayer2.Player PlaybackStatus 2>&1)"; then
+    echo "MPRIS integration failed: a session bus was available but Relaxy did not expose PlaybackStatus: $mpris_status" >&2
+    sed -n '1,160p' "$runtime_dir/backend.log" >&2
+    exit 1
+  fi
+  if [[ "$mpris_status" != *"Playing"* ]]; then
+    echo "MPRIS integration failed: expected PlaybackStatus=Playing, received: $mpris_status" >&2
+    exit 1
+  fi
+  if ! gdbus call --session \
+    --dest org.mpris.MediaPlayer2.Relaxy \
+    --object-path /org/mpris/MediaPlayer2 \
+    --method org.mpris.MediaPlayer2.Player.PlayPause >/dev/null; then
+    echo "MPRIS integration failed: PlayPause could not be called." >&2
+    exit 1
+  fi
   response="$(get_state)"
   jq -e '.state.playing == false' <<<"$response" >/dev/null
+  echo "[PASS] MPRIS controls"
+elif ! command -v gdbus >/dev/null 2>&1; then
+  echo "[SKIP] MPRIS controls: gdbus is not installed."
+else
+  echo "[SKIP] MPRIS controls: no session D-Bus is available."
 fi
 
 [[ -f "$state_path" ]]
 jq -e '.schemaVersion == 1 and .masterVolume == 0.35' "$state_path" >/dev/null
+
+kill -TERM "$backend_pid"
+wait "$backend_pid" 2>/dev/null || true
+backend_pid=""
+
+recovery_socket="$runtime_dir/recovery.sock"
+recovery_state_path="$runtime_dir/future-state.json"
+future_original_path="$runtime_dir/future-original.json"
+future_original='{"schemaVersion":99,"futureData":{"keep":"untouched"}}'
+printf '%s\n' "$future_original" >"$recovery_state_path"
+cp "$recovery_state_path" "$future_original_path"
+
+RELAXY_AUDIO_SINK=fakesink gjs -m "$repo_dir/backend/relaxy.js" \
+  --socket "$recovery_socket" \
+  --state "$recovery_state_path" \
+  --assets "$repo_dir/assets/sounds" \
+  >"$runtime_dir/recovery-backend.log" 2>&1 &
+backend_pid=$!
+
+for _attempt in $(seq 1 50); do
+  [[ -S "$recovery_socket" ]] && break
+  sleep 0.1
+done
+[[ -S "$recovery_socket" ]] || { sed -n '1,120p' "$runtime_dir/recovery-backend.log"; exit 1; }
+recovery_status_path="${recovery_socket%.sock}.status.json"
+
+recovery_command() {
+  gjs -m "$repo_dir/backend/relaxy.js" --command "$1" --socket "$recovery_socket"
+}
+
+for _attempt in $(seq 1 50); do
+  [[ -f "$recovery_status_path" ]] && jq -e '.stateRecovery.status == "future-version" and .stateRecovery.canRecover == true' "$recovery_status_path" >/dev/null 2>&1 && break
+  sleep 0.1
+done
+jq -e '.stateRecovery.status == "future-version" and .stateRecovery.canRecover == true' "$recovery_status_path" >/dev/null
+cmp -s "$recovery_state_path" "$future_original_path"
+
+response="$(recovery_command '{"id":"recovery-read","action":"get-state","payload":{}}')"
+jq -e '.ok == true and .state.schemaVersion == 1 and .state.masterVolume == 1' <<<"$response" >/dev/null
+response="$(recovery_command '{"id":"recovery-blocked-write","action":"set-master-volume","payload":{"volume":0.2}}')"
+jq -e '.ok == false and .state.masterVolume == 1' <<<"$response" >/dev/null
+cmp -s "$recovery_state_path" "$future_original_path"
+
+response="$(recovery_command '{"id":"recovery-confirm","action":"recover-state","payload":{}}')"
+jq -e '.ok == true and .state.schemaVersion == 1 and .state.masterVolume == 1' <<<"$response" >/dev/null
+for _attempt in $(seq 1 50); do
+  jq -e '.stateRecovery.status == "recovered" and (.stateRecovery.backupPath | length > 0)' "$recovery_status_path" >/dev/null 2>&1 && break
+  sleep 0.1
+done
+recovery_backup_path="$(jq -r '.stateRecovery.backupPath' "$recovery_status_path")"
+cmp -s "$recovery_backup_path" "$future_original_path"
+jq -e '.schemaVersion == 1 and .masterVolume == 1' "$recovery_state_path" >/dev/null
+[[ "$(stat -c %a "$recovery_backup_path")" == "600" ]]
 
 echo "Relaxy backend integration test passed."

@@ -81,15 +81,30 @@ out of automatic EOS recovery until an explicit user action clears it through
 
 ## Validation commands
 
-Run these from the repository root:
+Run the complete documented verification suite from the repository root:
+
+```bash
+./scripts/test.sh
+```
+
+The runner labels every required check as `[RUN]`, `[PASS]`, or `[FAIL]` and
+stops on the first failure. The MPRIS integration is an optional skip only when
+`gdbus` or a session bus is unavailable; if a session bus is present but Relaxy
+does not answer over MPRIS, the integration check fails.
+
+Individual checks are:
 
 ```bash
 ./scripts/check.sh
 ./tests/check_catalog.sh
 (cd assets && sha256sum -c SHA256SUMS)
 gjs -m tests/model.test.js
+gjs -m tests/state_recovery.test.js
 RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
 ./tests/ui_contract.sh
+node tests/command_queue.test.js
+node tests/recovery_policy.test.js
+./tests/test_runner.test.sh
 ./tests/service_contract.sh
 ./tests/integration.sh
 ./tests/socket_security.sh
@@ -101,6 +116,33 @@ with live noise. It sets `sync` on the fake sink so each phase runs in real
 time and finishes in a few seconds. `tests/integration.sh` creates a temporary
 D-Bus session and may require a normal user session rather than a restricted
 sandbox.
+
+The panel sends commands through `ui/CommandQueue.js` in arrival order. Pending
+volume updates may replace an earlier update for the same target only before a
+discrete command barrier; request IDs keep delayed responses from reconciling a
+newer optimistic volume value.
+
+Command failures are shown separately from mixer playback errors. Invalid or
+missing command output and nonzero process exits receive a retry-oriented
+message; backend validation errors retain their specific message. Preset and
+custom-sound editor submissions remain open with their draft intact on failure,
+and the save controls stay disabled until that request settles.
+
+The service supervisor allows five automatic backend restarts, with progressive
+delays of 1, 2, 4, 8, and 15 seconds. It enters an unavailable state after the
+budget is exhausted and exposes a manual retry action through the plugin's
+scoped service API. A 30-second ready uptime resets the retry budget; intentional
+service destruction cancels both timers and suppresses restart. `ui/RecoveryPolicy.js`
+contains the deterministic policy covered by `tests/recovery_policy.test.js`.
+
+Saved state is loaded through `inspectState()` so absent, corrupt, unreadable,
+and future-version files remain distinct. Unsupported/corrupt files are never
+silently normalized or overwritten; the explicit `recover-state` action first
+archives the exact invalid contents, then switches to defaults. Each ordinary
+save atomically keeps the previous supported file at `state.json.bak`, validates
+the private temporary file before checking the rename result, and only publishes
+a candidate model after persistence succeeds. A failed save returns an error
+with the old in-memory and on-disk state intact.
 
 ## Recent audio recovery history
 

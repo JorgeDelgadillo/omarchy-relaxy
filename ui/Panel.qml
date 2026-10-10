@@ -6,6 +6,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Catalog.js" as Catalog
+import "CommandQueue.js" as CommandQueue
 
 Item {
   id: root
@@ -13,18 +14,26 @@ Item {
   property var bar: null
   property var anchorItem: null
   property var hostWidget: null
+  property var service: null
   property bool opened: false
   property var mixerState: Catalog.defaultState()
-  property string pendingCommand: ""
-  property string pendingAction: ""
-  property var pendingPayload: ({})
   property var pendingVolumes: ({})
-  property real pendingMasterVolume: -1
+  property var pendingMasterVolume: null
+  property var commandQueue: null
+  property var activeRequest: null
+  property var activeResponse: null
+  property var editorSubmission: CommandQueue.createEditorSubmission()
+  property string editorRequestId: ""
+  property string editorErrorText: ""
+  property var commandError: null
   property string editorMode: ""
   property string editorId: ""
   property string confirmAction: ""
   property var confirmPayload: ({})
   property var lastError: null
+  property var stateRecovery: null
+  property var stateSaveError: null
+  property bool stateReadErrorLogged: false
 
   readonly property string pluginDirectory: localPath(Qt.resolvedUrl(".."))
   readonly property string backendPath: pluginDirectory + "/backend/relaxy.js"
@@ -44,6 +53,26 @@ Item {
     var prefix = root.lastError.soundId ? root.soundTitle(root.lastError.soundId) + ": " : "";
     return "⚠ " + prefix + root.lastError.message;
   }
+  readonly property string recoveryText: {
+    if (!root.service) return "";
+    if (root.service.recoveryState === "connecting" || root.service.recoveryState === "starting") {
+      return "Relaxy is connecting to its sound backend…";
+    }
+    if (root.service.recoveryState === "restarting") {
+      return "The sound backend stopped unexpectedly. Retrying in "
+        + Math.ceil(Number(root.service.retryDelayMs || 0) / 1000) + "s (attempt "
+        + root.service.retryAttempt + " of " + root.service.retryLimit + ").";
+    }
+    if (root.service.recoveryState === "unavailable") {
+      return "The sound backend is unavailable after " + root.service.retryAttempt
+        + " retries. Retry it or check the Omarchy shell logs.";
+    }
+    return "";
+  }
+  readonly property string stateRecoveryText: root.stateRecovery && root.stateRecovery.message
+    ? String(root.stateRecovery.message) : "";
+  readonly property string stateSaveErrorText: root.stateSaveError && root.stateSaveError.message
+    ? "Saved settings were not changed: " + String(root.stateSaveError.message) : "";
 
   function soundTitle(soundId) {
     for (var groupIndex = 0; groupIndex < Catalog.groups.length; groupIndex += 1) {
@@ -78,51 +107,91 @@ Item {
     else root.open();
   }
 
-  function sendAction(action, payload) {
-    var command = JSON.stringify({
-      id: String(Date.now()) + "-" + action,
-      action: action,
-      payload: payload || {},
-    });
-    if (commandProcess.running) {
-      root.pendingCommand = command;
-      return;
+  function sendAction(action, payload, options) {
+    if (!root.commandQueue) {
+      root.commandQueue = CommandQueue.create(
+        function(request) { root.startCommand(request); },
+        function(request, response) { root.finishCommand(request, response); },
+      );
     }
-    commandProcess.command = ["gjs", "-m", root.backendPath, "--command", command, "--socket", root.socketPath];
+    return root.commandQueue.enqueue(action, payload, options);
+  }
+
+  function startCommand(request) {
+    root.activeRequest = request;
+    root.activeResponse = null;
+    commandProcess.command = ["gjs", "-m", root.backendPath, "--command", JSON.stringify(request), "--socket", root.socketPath];
     commandProcess.running = true;
+  }
+
+  function finishCommand(request, response) {
+    var failure = CommandQueue.failureMessage(response, 0, request.id);
+    if (response && response.state) {
+      root.mixerState = response.state;
+      root.reconcilePendingVolumes();
+    }
+    if (failure) {
+      root.commandError = { action: request.action, message: failure };
+      if (root.editorRequestId === request.id) {
+        root.editorSubmission.settle(request.id, false);
+        root.editorRequestId = "";
+        root.editorErrorText = failure;
+      }
+    } else {
+      root.commandError = null;
+      if (root.editorRequestId === request.id) {
+        root.editorSubmission.settle(request.id, true);
+        root.editorRequestId = "";
+        root.editorErrorText = "";
+        editorDialog.close();
+      }
+    }
+    if (failure && request.volumeTarget) {
+      if (request.volumeTarget === "master" && root.pendingMasterVolume && root.pendingMasterVolume.requestId === request.id) {
+        root.pendingMasterVolume = null;
+      } else if (request.volumeTarget.indexOf("sound:") === 0) {
+        var soundId = request.volumeTarget.slice("sound:".length);
+        var pending = root.pendingVolumes[soundId];
+        if (pending && pending.requestId === request.id) {
+          var remaining = Object.assign({}, root.pendingVolumes);
+          delete remaining[soundId];
+          root.pendingVolumes = remaining;
+        }
+      }
+    }
   }
 
   function volumeFor(soundId) {
     return root.pendingVolumes[soundId] !== undefined
-      ? Number(root.pendingVolumes[soundId])
+      ? Number(root.pendingVolumes[soundId].value)
       : Catalog.volume(root.mixerState, soundId);
   }
 
   function setMasterVolumeFromSlider(next) {
-    root.pendingMasterVolume = Number(next);
-    root.sendAction("set-master-volume", { volume: next });
+    var requestId = root.sendAction("set-master-volume", { volume: next }, { volumeTarget: "master" });
+    root.pendingMasterVolume = { value: Number(next), requestId: requestId };
   }
 
   function setSoundVolumeFromSlider(soundId, next) {
     var nextPending = Object.assign({}, root.pendingVolumes);
-    nextPending[soundId] = Number(next);
+    var requestId = root.sendAction("set-sound-volume", { soundId: soundId, volume: next }, { volumeTarget: "sound:" + soundId });
+    nextPending[soundId] = { value: Number(next), requestId: requestId };
     root.pendingVolumes = nextPending;
-    root.sendAction("set-sound-volume", { soundId: soundId, volume: next });
   }
 
   function clearPendingVolumes() {
-    root.pendingMasterVolume = -1;
+    root.pendingMasterVolume = null;
     root.pendingVolumes = ({});
   }
 
   function reconcilePendingVolumes() {
-    if (root.pendingMasterVolume >= 0 && Math.abs(Number(root.mixerState.masterVolume) - root.pendingMasterVolume) < 0.001) {
-      root.pendingMasterVolume = -1;
+    if (root.pendingMasterVolume && Math.abs(Number(root.mixerState.masterVolume) - root.pendingMasterVolume.value) < 0.001) {
+      root.pendingMasterVolume = null;
     }
 
     var remaining = {};
     for (var soundId in root.pendingVolumes) {
-      if (Math.abs(Catalog.volume(root.mixerState, soundId) - Number(root.pendingVolumes[soundId])) >= 0.001) {
+      if (Math.abs(Catalog.volume(root.mixerState, soundId) - Number(root.pendingVolumes[soundId].value)) >= 0.001) {
         remaining[soundId] = root.pendingVolumes[soundId];
       }
     }
@@ -133,11 +202,16 @@ Item {
     try {
       var parsed = JSON.parse(stateFile.text());
       if (parsed && parsed.schemaVersion === 1) {
+        root.stateReadErrorLogged = false;
         root.mixerState = parsed;
         root.reconcilePendingVolumes();
+      } else if (!root.stateReadErrorLogged) {
+        console.warn("relaxy state: unsupported state file was left untouched");
+        root.stateReadErrorLogged = true;
       }
     } catch (error) {
-      console.warn("relaxy state: " + error);
+      if (!root.stateReadErrorLogged) console.warn("relaxy state: " + error);
+      root.stateReadErrorLogged = true;
     }
   }
 
@@ -145,22 +219,20 @@ Item {
     try {
       var parsed = JSON.parse(statusFile.text());
       root.lastError = parsed && parsed.lastError ? parsed.lastError : null;
+      root.stateRecovery = parsed && parsed.stateRecovery ? parsed.stateRecovery : null;
+      root.stateSaveError = parsed && parsed.stateSaveError ? parsed.stateSaveError : null;
     } catch (error) {
       root.lastError = null;
+      root.stateRecovery = null;
+      root.stateSaveError = null;
     }
-  }
-
-  function startPendingCommand() {
-    if (root.pendingCommand === "") return;
-    var command = root.pendingCommand;
-    root.pendingCommand = "";
-    commandProcess.command = ["gjs", "-m", root.backendPath, "--command", command, "--socket", root.socketPath];
-    commandProcess.running = true;
   }
 
   function openPresetEditor(mode, presetId, currentName) {
     root.editorMode = mode;
     root.editorId = presetId || "";
+    root.editorErrorText = "";
+    root.editorSubmission.setDraft(currentName || "");
     editorDialog.title = mode === "rename" ? "Rename preset" : "New preset";
     editorField.text = currentName || "";
     editorDialog.open();
@@ -173,6 +245,8 @@ Item {
   function openCustomSoundEditor(soundId, currentName) {
     root.editorMode = "rename-custom";
     root.editorId = soundId;
+    root.editorErrorText = "";
+    root.editorSubmission.setDraft(currentName || "");
     editorDialog.title = "Rename custom sound";
     editorField.text = currentName || "";
     editorDialog.open();
@@ -183,16 +257,20 @@ Item {
   }
 
   function submitEditor() {
+    if (root.editorSubmission.isPending()) return;
     var name = editorField.text.trim();
     if (!name) return;
+    root.editorErrorText = "";
+    root.commandError = null;
+    var requestId;
     if (root.editorMode === "rename") {
-      root.sendAction("rename-preset", { presetId: root.editorId, name: name });
+      requestId = root.sendAction("rename-preset", { presetId: root.editorId, name: name });
     } else if (root.editorMode === "rename-custom") {
-      root.sendAction("rename-custom-sound", { soundId: root.editorId, name: name });
+      requestId = root.sendAction("rename-custom-sound", { soundId: root.editorId, name: name });
     } else {
-      root.sendAction("add-preset", { name: name });
+      requestId = root.sendAction("add-preset", { name: name });
     }
-    editorDialog.close();
+    if (root.editorSubmission.begin(requestId, name)) root.editorRequestId = requestId;
   }
 
   function confirm(action, payload, title, message) {
@@ -233,19 +311,26 @@ Item {
   Process {
     id: commandProcess
     onExited: function(exitCode) {
-      if (exitCode !== 0) root.clearPendingVolumes();
+      var response = root.activeResponse;
+      var request = root.activeRequest;
+      if (request) {
+        var failure = CommandQueue.failureMessage(response, exitCode, request.id);
+        if (failure) response = {
+          id: request.id,
+          ok: false,
+          error: failure,
+          state: response && response.state ? response.state : null,
+        };
+        if (root.commandQueue) root.commandQueue.complete(request.id, response);
+      }
       stateFile.reload();
-      root.startPendingCommand();
     }
     stdout: SplitParser {
       onRead: function(line) {
         try {
           var response = JSON.parse(line);
-          if (!response.ok) {
-            root.clearPendingVolumes();
-          } else if (response.state) {
-            root.mixerState = response.state;
-            root.reconcilePendingVolumes();
+          if (root.activeRequest && response && response.id === root.activeRequest.id) {
+            root.activeResponse = response;
           }
         } catch (error) {
           console.warn("relaxy response: " + error);
@@ -261,9 +346,7 @@ Item {
     id: editorDialog
     width: Style.space(300)
     modal: true
-    standardButtons: QQC2.Dialog.Ok | QQC2.Dialog.Cancel
-
-    onAccepted: root.submitEditor()
+    closePolicy: QQC2.Popup.NoAutoClose
 
     contentItem: Column {
       spacing: Style.space(8)
@@ -278,9 +361,41 @@ Item {
       TextField {
         id: editorField
         width: parent.width
+        enabled: !root.editorSubmission.isPending()
         foreground: root.bar ? root.bar.foreground : "white"
         accent: Color.accent
+        onTextChanged: root.editorSubmission.setDraft(text)
         onAccepted: root.submitEditor()
+      }
+
+      Text {
+        width: parent.width
+        visible: root.editorErrorText.length > 0
+        text: root.editorErrorText
+        textFormat: Text.PlainText
+        color: Color.urgent
+        font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+        font.pixelSize: Style.font.body
+        wrapMode: Text.WordWrap
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+
+        Button {
+          text: "Cancel"
+          foreground: root.bar ? root.bar.foreground : "white"
+          enabled: !root.editorSubmission.isPending()
+          onClicked: editorDialog.close()
+        }
+
+        Button {
+          text: root.editorSubmission.isPending() ? "Saving…" : "Save"
+          foreground: root.bar ? root.bar.foreground : "white"
+          enabled: !root.editorSubmission.isPending() && editorField.text.trim().length > 0
+          onClicked: root.submitEditor()
+        }
       }
     }
   }
@@ -471,6 +586,97 @@ Item {
         }
       }
 
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+        visible: root.commandError !== null
+
+        Text {
+          width: parent.width - Style.space(28)
+          text: root.commandError ? root.commandError.message : ""
+          textFormat: Text.PlainText
+          color: Color.urgent
+          font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+
+        Button {
+          iconText: "󰅖"
+          foreground: root.bar ? root.bar.foreground : "white"
+          tooltipText: "Dismiss command error"
+          onClicked: root.commandError = null
+        }
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+        visible: root.stateRecoveryText.length > 0
+
+        Text {
+          width: parent.width - (root.stateRecovery && root.stateRecovery.canRecover ? Style.space(116) : 0)
+          text: root.stateRecoveryText
+          textFormat: Text.PlainText
+          color: root.stateRecovery && root.stateRecovery.status === "recovered" ? Color.accent : Color.urgent
+          font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+
+        Button {
+          visible: root.stateRecovery && root.stateRecovery.canRecover === true
+          text: "Use defaults"
+          foreground: root.bar ? root.bar.foreground : "white"
+          tooltipText: "Archive the current file and use default settings"
+          onClicked: root.confirm(
+            "recover-state",
+            {},
+            "Use default settings?",
+            "Relaxy will preserve a private copy of the current state file, then replace it with defaults. This cannot restore the old state into this version of Relaxy."
+          )
+        }
+      }
+
+      Row {
+        width: parent.width
+        visible: root.stateSaveErrorText.length > 0
+
+        Text {
+          width: parent.width
+          text: root.stateSaveErrorText
+          textFormat: Text.PlainText
+          color: Color.urgent
+          font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+        visible: root.recoveryText.length > 0
+
+        Text {
+          width: parent.width - (root.service && root.service.recoveryState === "unavailable" ? Style.space(96) : 0)
+          text: root.recoveryText
+          textFormat: Text.PlainText
+          color: root.service && root.service.recoveryState === "unavailable" ? Color.urgent : Color.accent
+          font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+
+        Button {
+          visible: root.service && root.service.recoveryState === "unavailable"
+          text: "Retry"
+          foreground: root.bar ? root.bar.foreground : "white"
+          tooltipText: "Retry the Relaxy sound backend"
+          onClicked: if (root.service) root.service.retryBackend()
+        }
+      }
+
       Item {
         width: parent.width
         height: Style.space(42)
@@ -497,7 +703,7 @@ Item {
           anchors.bottom: parent.bottom
           minimum: 0
           maximum: 1
-          value: root.pendingMasterVolume >= 0 ? root.pendingMasterVolume : Number(root.mixerState.masterVolume || 0)
+          value: root.pendingMasterVolume ? root.pendingMasterVolume.value : Number(root.mixerState.masterVolume || 0)
           onMoved: function(next) { root.setMasterVolumeFromSlider(next) }
         }
       }

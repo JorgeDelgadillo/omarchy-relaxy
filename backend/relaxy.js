@@ -10,11 +10,14 @@ import {
   addCustomSound,
   addPreset,
   applyLaunchPlayback,
-  loadState,
+  defaultState,
+  inspectState,
+  mutateAndPersist,
   removeCustomSound,
   removePreset,
   renameCustomSound,
   renamePreset,
+  recoverStateFile,
   resetVolumes,
   saveState,
   setActivePreset,
@@ -212,6 +215,7 @@ const ACTION_SCHEMAS = {
   "set-start-paused": { value: "boolean" },
   "set-inhibit-suspension": { value: "boolean" },
   "set-hide-inactive": { value: "boolean" },
+  "recover-state": {},
   "dismiss-error": {},
 };
 
@@ -420,7 +424,18 @@ export class Backend {
     this.settingsPath = settingsPath;
     this.statusPath = statusPath;
     ensurePrivateDirectory(GLib.path_get_dirname(this.settingsPath));
-    this.state = loadState(settingsPath);
+    this.stateInspection = inspectState(settingsPath);
+    this.state = this.stateInspection.state;
+    this.stateRecoverySource = this.stateInspection.canRecover ? this.stateInspection : null;
+    this.stateRecovery = this.stateInspection.status === "missing" || this.stateInspection.status === "ok"
+      ? null
+      : {
+        status: this.stateInspection.status,
+        message: this.stateInspection.message,
+        path: this.settingsPath,
+        canRecover: this.stateInspection.canRecover,
+      };
+    this.stateSaveError = null;
     this.clients = new Set();
     this.loop = new GLib.MainLoop(null, false);
     this.inhibitor = null;
@@ -429,8 +444,16 @@ export class Backend {
     this.syncSource = 0;
     this.pid = currentPid();
     this.powerMonitor = Gio.PowerProfileMonitor.dup_default();
-    if (applyLaunchPlayback(this.state, powerSaverEnabled(this.powerMonitor))) {
-      saveState(this.state, this.settingsPath);
+    const launchState = JSON.parse(JSON.stringify(this.state));
+    if (applyLaunchPlayback(launchState, powerSaverEnabled(this.powerMonitor))) {
+      try {
+        this.state = saveState(launchState, this.settingsPath);
+      } catch (error) {
+        // Keep safe launch-time pausing in memory, but never replace the saved
+        // file or discard its last-known-good copy when persistence fails.
+        this.state = launchState;
+        this.noteStateSaveError(error);
+      }
     }
     this.mixer = new AmbientMixer((event) => this.handleMixerEvent(event));
     this.mpris = new MprisAdapter(this);
@@ -601,12 +624,24 @@ export class Backend {
   }
 
   writeStatus() {
-    const document = { schemaVersion: 1, pid: this.pid, lastError: this.lastError };
+    const document = {
+      schemaVersion: 1,
+      pid: this.pid,
+      lastError: this.lastError,
+      stateRecovery: this.stateRecovery,
+      stateSaveError: this.stateSaveError,
+    };
     try {
       writePrivateFile(this.statusPath, `${JSON.stringify(document, null, 2)}\n`);
     } catch (error) {
       printerr(`relaxy: could not write the status file: ${error.message}`);
     }
+  }
+
+  noteStateSaveError(error) {
+    if (!error || error.name !== "StatePersistenceError") return;
+    this.stateSaveError = { message: error.message, at: Date.now() };
+    printerr(`relaxy: state was not changed because persistence failed: ${error.message}`);
   }
 
   clearSoundError(soundId) {
@@ -654,6 +689,7 @@ export class Backend {
       case "set-start-paused": this.mutate((state) => { state.startPaused = Boolean(payload.value); return state; }); break;
       case "set-inhibit-suspension": this.mutate((state) => { state.inhibitSuspension = Boolean(payload.value); return state; }); break;
       case "set-hide-inactive": this.mutate((state) => { activePreset(state).hideInactive = Boolean(payload.value); return state; }); break;
+      case "recover-state": this.recoverState(); break;
       case "dismiss-error": this.dismissError(); break;
       default: throw new Error(`Unknown action: ${action}`);
     }
@@ -661,23 +697,58 @@ export class Backend {
   }
 
   mutate(mutator) {
-    this.state = mutator(this.state) || this.state;
-    this.persistAndSync();
+    let nextState;
+    try {
+      nextState = mutateAndPersist(this.state, mutator, this.settingsPath);
+    } catch (error) {
+      this.noteStateSaveError(error);
+      this.writeStatus();
+      throw error;
+    }
+    this.state = nextState;
+    this.stateSaveError = null;
+    this.publishState();
   }
 
   setPlaying(value) {
-    this.state.playing = Boolean(value);
-    this.persistAndSync();
+    this.mutate((state) => { state.playing = Boolean(value); return state; });
   }
 
   setMasterVolume(value) {
-    this.state.masterVolume = Math.max(0, Math.min(1, Number(value) || 0));
-    this.persistAndSync();
+    this.mutate((state) => {
+      state.masterVolume = Math.max(0, Math.min(1, Number(value) || 0));
+      return state;
+    });
   }
 
-  persistAndSync() {
-    saveState(this.state, this.settingsPath);
+  recoverState() {
+    if (!this.stateRecoverySource || !this.stateRecoverySource.canRecover) {
+      throw new Error("The saved state cannot be recovered automatically; fix its file permissions and restart Relaxy.");
+    }
+    let recovered;
+    try {
+      recovered = recoverStateFile(defaultState(), this.settingsPath, this.stateRecoverySource);
+    } catch (error) {
+      this.noteStateSaveError(error);
+      this.writeStatus();
+      throw error;
+    }
+    this.state = recovered.state;
+    this.stateRecoverySource = null;
+    this.stateRecovery = {
+      status: "recovered",
+      message: `The previous state was preserved at ${recovered.backupPath}. Default settings are now in use.`,
+      path: this.settingsPath,
+      backupPath: recovered.backupPath,
+      canRecover: false,
+    };
+    this.stateSaveError = null;
+    this.publishState();
+  }
+
+  publishState() {
     this.mpris.emitChanges();
+    this.writeStatus();
     this.broadcast({ type: "state-changed" });
     this.scheduleSync();
   }
