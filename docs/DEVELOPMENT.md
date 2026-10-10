@@ -88,6 +88,7 @@ Run these from the repository root:
 ./tests/check_catalog.sh
 (cd assets && sha256sum -c SHA256SUMS)
 gjs -m tests/model.test.js
+gjs -m tests/state_recovery.test.js
 RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
 ./tests/ui_contract.sh
 node tests/command_queue.test.js
@@ -121,6 +122,15 @@ budget is exhausted and exposes a manual retry action through the plugin's
 scoped service API. A 30-second ready uptime resets the retry budget; intentional
 service destruction cancels both timers and suppresses restart. `ui/RecoveryPolicy.js`
 contains the deterministic policy covered by `tests/recovery_policy.test.js`.
+
+Saved state is loaded through `inspectState()` so absent, corrupt, unreadable,
+and future-version files remain distinct. Unsupported/corrupt files are never
+silently normalized or overwritten; the explicit `recover-state` action first
+archives the exact invalid contents, then switches to defaults. Each ordinary
+save atomically keeps the previous supported file at `state.json.bak`, validates
+the private temporary file before checking the rename result, and only publishes
+a candidate model after persistence succeeds. A failed save returns an error
+with the old in-memory and on-disk state intact.
 
 ## Recent audio recovery history
 

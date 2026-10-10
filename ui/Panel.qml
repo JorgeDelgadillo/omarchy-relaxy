@@ -31,6 +31,9 @@ Item {
   property string confirmAction: ""
   property var confirmPayload: ({})
   property var lastError: null
+  property var stateRecovery: null
+  property var stateSaveError: null
+  property bool stateReadErrorLogged: false
 
   readonly property string pluginDirectory: localPath(Qt.resolvedUrl(".."))
   readonly property string backendPath: pluginDirectory + "/backend/relaxy.js"
@@ -66,6 +69,10 @@ Item {
     }
     return "";
   }
+  readonly property string stateRecoveryText: root.stateRecovery && root.stateRecovery.message
+    ? String(root.stateRecovery.message) : "";
+  readonly property string stateSaveErrorText: root.stateSaveError && root.stateSaveError.message
+    ? "Saved settings were not changed: " + String(root.stateSaveError.message) : "";
 
   function soundTitle(soundId) {
     for (var groupIndex = 0; groupIndex < Catalog.groups.length; groupIndex += 1) {
@@ -195,11 +202,16 @@ Item {
     try {
       var parsed = JSON.parse(stateFile.text());
       if (parsed && parsed.schemaVersion === 1) {
+        root.stateReadErrorLogged = false;
         root.mixerState = parsed;
         root.reconcilePendingVolumes();
+      } else if (!root.stateReadErrorLogged) {
+        console.warn("relaxy state: unsupported state file was left untouched");
+        root.stateReadErrorLogged = true;
       }
     } catch (error) {
-      console.warn("relaxy state: " + error);
+      if (!root.stateReadErrorLogged) console.warn("relaxy state: " + error);
+      root.stateReadErrorLogged = true;
     }
   }
 
@@ -207,8 +219,12 @@ Item {
     try {
       var parsed = JSON.parse(statusFile.text());
       root.lastError = parsed && parsed.lastError ? parsed.lastError : null;
+      root.stateRecovery = parsed && parsed.stateRecovery ? parsed.stateRecovery : null;
+      root.stateSaveError = parsed && parsed.stateSaveError ? parsed.stateSaveError : null;
     } catch (error) {
       root.lastError = null;
+      root.stateRecovery = null;
+      root.stateSaveError = null;
     }
   }
 
@@ -590,6 +606,50 @@ Item {
           foreground: root.bar ? root.bar.foreground : "white"
           tooltipText: "Dismiss command error"
           onClicked: root.commandError = null
+        }
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+        visible: root.stateRecoveryText.length > 0
+
+        Text {
+          width: parent.width - (root.stateRecovery && root.stateRecovery.canRecover ? Style.space(116) : 0)
+          text: root.stateRecoveryText
+          textFormat: Text.PlainText
+          color: root.stateRecovery && root.stateRecovery.status === "recovered" ? Color.accent : Color.urgent
+          font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+
+        Button {
+          visible: root.stateRecovery && root.stateRecovery.canRecover === true
+          text: "Use defaults"
+          foreground: root.bar ? root.bar.foreground : "white"
+          tooltipText: "Archive the current file and use default settings"
+          onClicked: root.confirm(
+            "recover-state",
+            {},
+            "Use default settings?",
+            "Relaxy will preserve a private copy of the current state file, then replace it with defaults. This cannot restore the old state into this version of Relaxy."
+          )
+        }
+      }
+
+      Row {
+        width: parent.width
+        visible: root.stateSaveErrorText.length > 0
+
+        Text {
+          width: parent.width
+          text: root.stateSaveErrorText
+          textFormat: Text.PlainText
+          color: Color.urgent
+          font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
         }
       }
 

@@ -22,6 +22,16 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function assertThrows(callback, pattern, message) {
+  try {
+    callback();
+  } catch (error) {
+    if (!pattern || pattern.test(error.message)) return;
+    throw new Error(message + ": unexpected error " + error.message);
+  }
+  throw new Error(message);
+}
+
 const state = defaultState();
 setSoundPlaying(state, "rain", true);
 setSoundVolume(state, "rain", 0.75);
@@ -41,13 +51,14 @@ removeCustomSound(state, customId);
 assert(state.customSounds.length === 0, "custom sound should be removed");
 
 const normalized = normalizeState({
-  schemaVersion: 99,
+  schemaVersion: 1,
   masterVolume: 9,
   presets: [{ id: "default", name: "", volumes: { rain: 2 } }, { id: "default", name: "Duplicate" }],
 });
-assert(normalized.schemaVersion === 1, "state schema should be normalized");
+assert(normalized.schemaVersion === 1, "supported state schema should be preserved");
 assert(normalized.masterVolume === 1, "master volume should be clamped");
 assert(normalized.presets.length === 1, "duplicate preset ids should be discarded");
+assertThrows(() => normalizeState({ schemaVersion: 99 }), /newer state schema/i, "future state versions must not be normalized or downgraded");
 
 const startPaused = defaultState();
 startPaused.startPaused = true;
