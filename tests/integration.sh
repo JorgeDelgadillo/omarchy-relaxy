@@ -154,18 +154,34 @@ jq -e '.ok == true and .state.masterVolume == 0.35' <<<"$response" >/dev/null
 response="$(get_state)"
 jq -e --arg custom_id "$custom_id" '.state.masterVolume == 0.35 and .state.customSounds[0].id == $custom_id and .state.presets[1].hideInactive == true' <<<"$response" >/dev/null
 
-if mpris_status="$(gdbus call --session \
-  --dest org.mpris.MediaPlayer2.Relaxy \
-  --object-path /org/mpris/MediaPlayer2 \
-  --method org.freedesktop.DBus.Properties.Get \
-  org.mpris.MediaPlayer2.Player PlaybackStatus 2>/dev/null)"; then
-  [[ "$mpris_status" == *"Playing"* ]]
-  gdbus call --session \
+if command -v gdbus >/dev/null 2>&1 && [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+  if ! mpris_status="$(gdbus call --session \
     --dest org.mpris.MediaPlayer2.Relaxy \
     --object-path /org/mpris/MediaPlayer2 \
-    --method org.mpris.MediaPlayer2.Player.PlayPause >/dev/null
+    --method org.freedesktop.DBus.Properties.Get \
+    org.mpris.MediaPlayer2.Player PlaybackStatus 2>&1)"; then
+    echo "MPRIS integration failed: a session bus was available but Relaxy did not expose PlaybackStatus: $mpris_status" >&2
+    sed -n '1,160p' "$runtime_dir/backend.log" >&2
+    exit 1
+  fi
+  if [[ "$mpris_status" != *"Playing"* ]]; then
+    echo "MPRIS integration failed: expected PlaybackStatus=Playing, received: $mpris_status" >&2
+    exit 1
+  fi
+  if ! gdbus call --session \
+    --dest org.mpris.MediaPlayer2.Relaxy \
+    --object-path /org/mpris/MediaPlayer2 \
+    --method org.mpris.MediaPlayer2.Player.PlayPause >/dev/null; then
+    echo "MPRIS integration failed: PlayPause could not be called." >&2
+    exit 1
+  fi
   response="$(get_state)"
   jq -e '.state.playing == false' <<<"$response" >/dev/null
+  echo "[PASS] MPRIS controls"
+elif ! command -v gdbus >/dev/null 2>&1; then
+  echo "[SKIP] MPRIS controls: gdbus is not installed."
+else
+  echo "[SKIP] MPRIS controls: no session D-Bus is available."
 fi
 
 [[ -f "$state_path" ]]

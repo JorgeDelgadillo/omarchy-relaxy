@@ -81,7 +81,18 @@ out of automatic EOS recovery until an explicit user action clears it through
 
 ## Validation commands
 
-Run these from the repository root:
+Run the complete documented verification suite from the repository root:
+
+```bash
+./scripts/test.sh
+```
+
+The runner labels every required check as `[RUN]`, `[PASS]`, or `[FAIL]` and
+stops on the first failure. The MPRIS integration is an optional skip only when
+`gdbus` or a session bus is unavailable; if a session bus is present but Relaxy
+does not answer over MPRIS, the integration check fails.
+
+Individual checks are:
 
 ```bash
 ./scripts/check.sh
@@ -93,6 +104,7 @@ RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
 ./tests/ui_contract.sh
 node tests/command_queue.test.js
 node tests/recovery_policy.test.js
+./tests/test_runner.test.sh
 ./tests/service_contract.sh
 ./tests/integration.sh
 ./tests/socket_security.sh
