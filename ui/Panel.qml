@@ -6,6 +6,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Catalog.js" as Catalog
+import "CommandQueue.js" as CommandQueue
 
 Item {
   id: root
@@ -15,11 +16,11 @@ Item {
   property var hostWidget: null
   property bool opened: false
   property var mixerState: Catalog.defaultState()
-  property string pendingCommand: ""
-  property string pendingAction: ""
-  property var pendingPayload: ({})
   property var pendingVolumes: ({})
-  property real pendingMasterVolume: -1
+  property var pendingMasterVolume: null
+  property var commandQueue: null
+  property var activeRequest: null
+  property var activeResponse: null
   property string editorMode: ""
   property string editorId: ""
   property string confirmAction: ""
@@ -78,51 +79,74 @@ Item {
     else root.open();
   }
 
-  function sendAction(action, payload) {
-    var command = JSON.stringify({
-      id: String(Date.now()) + "-" + action,
-      action: action,
-      payload: payload || {},
-    });
-    if (commandProcess.running) {
-      root.pendingCommand = command;
-      return;
+  function sendAction(action, payload, options) {
+    if (!root.commandQueue) {
+      root.commandQueue = CommandQueue.create(
+        function(request) { root.startCommand(request); },
+        function(request, response) { root.finishCommand(request, response); },
+      );
     }
-    commandProcess.command = ["gjs", "-m", root.backendPath, "--command", command, "--socket", root.socketPath];
+    return root.commandQueue.enqueue(action, payload, options);
+  }
+
+  function startCommand(request) {
+    root.activeRequest = request;
+    root.activeResponse = null;
+    commandProcess.command = ["gjs", "-m", root.backendPath, "--command", JSON.stringify(request), "--socket", root.socketPath];
     commandProcess.running = true;
+  }
+
+  function finishCommand(request, response) {
+    if (response && response.state) {
+      root.mixerState = response.state;
+      root.reconcilePendingVolumes();
+    }
+    if (response && !response.ok && request.volumeTarget) {
+      if (request.volumeTarget === "master" && root.pendingMasterVolume && root.pendingMasterVolume.requestId === request.id) {
+        root.pendingMasterVolume = null;
+      } else if (request.volumeTarget.indexOf("sound:") === 0) {
+        var soundId = request.volumeTarget.slice("sound:".length);
+        var pending = root.pendingVolumes[soundId];
+        if (pending && pending.requestId === request.id) {
+          var remaining = Object.assign({}, root.pendingVolumes);
+          delete remaining[soundId];
+          root.pendingVolumes = remaining;
+        }
+      }
+    }
   }
 
   function volumeFor(soundId) {
     return root.pendingVolumes[soundId] !== undefined
-      ? Number(root.pendingVolumes[soundId])
+      ? Number(root.pendingVolumes[soundId].value)
       : Catalog.volume(root.mixerState, soundId);
   }
 
   function setMasterVolumeFromSlider(next) {
-    root.pendingMasterVolume = Number(next);
-    root.sendAction("set-master-volume", { volume: next });
+    var requestId = root.sendAction("set-master-volume", { volume: next }, { volumeTarget: "master" });
+    root.pendingMasterVolume = { value: Number(next), requestId: requestId };
   }
 
   function setSoundVolumeFromSlider(soundId, next) {
     var nextPending = Object.assign({}, root.pendingVolumes);
-    nextPending[soundId] = Number(next);
+    var requestId = root.sendAction("set-sound-volume", { soundId: soundId, volume: next }, { volumeTarget: "sound:" + soundId });
+    nextPending[soundId] = { value: Number(next), requestId: requestId };
     root.pendingVolumes = nextPending;
-    root.sendAction("set-sound-volume", { soundId: soundId, volume: next });
   }
 
   function clearPendingVolumes() {
-    root.pendingMasterVolume = -1;
+    root.pendingMasterVolume = null;
     root.pendingVolumes = ({});
   }
 
   function reconcilePendingVolumes() {
-    if (root.pendingMasterVolume >= 0 && Math.abs(Number(root.mixerState.masterVolume) - root.pendingMasterVolume) < 0.001) {
-      root.pendingMasterVolume = -1;
+    if (root.pendingMasterVolume && Math.abs(Number(root.mixerState.masterVolume) - root.pendingMasterVolume.value) < 0.001) {
+      root.pendingMasterVolume = null;
     }
 
     var remaining = {};
     for (var soundId in root.pendingVolumes) {
-      if (Math.abs(Catalog.volume(root.mixerState, soundId) - Number(root.pendingVolumes[soundId])) >= 0.001) {
+      if (Math.abs(Catalog.volume(root.mixerState, soundId) - Number(root.pendingVolumes[soundId].value)) >= 0.001) {
         remaining[soundId] = root.pendingVolumes[soundId];
       }
     }
@@ -148,14 +172,6 @@ Item {
     } catch (error) {
       root.lastError = null;
     }
-  }
-
-  function startPendingCommand() {
-    if (root.pendingCommand === "") return;
-    var command = root.pendingCommand;
-    root.pendingCommand = "";
-    commandProcess.command = ["gjs", "-m", root.backendPath, "--command", command, "--socket", root.socketPath];
-    commandProcess.running = true;
   }
 
   function openPresetEditor(mode, presetId, currentName) {
@@ -233,19 +249,17 @@ Item {
   Process {
     id: commandProcess
     onExited: function(exitCode) {
-      if (exitCode !== 0) root.clearPendingVolumes();
+      var response = root.activeResponse;
+      if (exitCode !== 0) response = { id: root.activeRequest ? root.activeRequest.id : "", ok: false };
+      if (root.commandQueue && root.activeRequest) root.commandQueue.complete(root.activeRequest.id, response);
       stateFile.reload();
-      root.startPendingCommand();
     }
     stdout: SplitParser {
       onRead: function(line) {
         try {
           var response = JSON.parse(line);
-          if (!response.ok) {
-            root.clearPendingVolumes();
-          } else if (response.state) {
-            root.mixerState = response.state;
-            root.reconcilePendingVolumes();
+          if (root.activeRequest && response && response.id === root.activeRequest.id) {
+            root.activeResponse = response;
           }
         } catch (error) {
           console.warn("relaxy response: " + error);
@@ -497,7 +511,7 @@ Item {
           anchors.bottom: parent.bottom
           minimum: 0
           maximum: 1
-          value: root.pendingMasterVolume >= 0 ? root.pendingMasterVolume : Number(root.mixerState.masterVolume || 0)
+          value: root.pendingMasterVolume ? root.pendingMasterVolume.value : Number(root.mixerState.masterVolume || 0)
           onMoved: function(next) { root.setMasterVolumeFromSlider(next) }
         }
       }

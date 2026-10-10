@@ -90,6 +90,7 @@ Run these from the repository root:
 gjs -m tests/model.test.js
 RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
 ./tests/ui_contract.sh
+node tests/command_queue.test.js
 ./tests/service_contract.sh
 ./tests/integration.sh
 ./tests/socket_security.sh
@@ -101,6 +102,11 @@ with live noise. It sets `sync` on the fake sink so each phase runs in real
 time and finishes in a few seconds. `tests/integration.sh` creates a temporary
 D-Bus session and may require a normal user session rather than a restricted
 sandbox.
+
+The panel sends commands through `ui/CommandQueue.js` in arrival order. Pending
+volume updates may replace an earlier update for the same target only before a
+discrete command barrier; request IDs keep delayed responses from reconciling a
+newer optimistic volume value.
 
 ## Recent audio recovery history
 
