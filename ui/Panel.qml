@@ -14,6 +14,7 @@ Item {
   property var bar: null
   property var anchorItem: null
   property var hostWidget: null
+  property var service: null
   property bool opened: false
   property var mixerState: Catalog.defaultState()
   property var pendingVolumes: ({})
@@ -48,6 +49,22 @@ Item {
     if (!root.lastError) return "";
     var prefix = root.lastError.soundId ? root.soundTitle(root.lastError.soundId) + ": " : "";
     return "⚠ " + prefix + root.lastError.message;
+  }
+  readonly property string recoveryText: {
+    if (!root.service) return "";
+    if (root.service.recoveryState === "connecting" || root.service.recoveryState === "starting") {
+      return "Relaxy is connecting to its sound backend…";
+    }
+    if (root.service.recoveryState === "restarting") {
+      return "The sound backend stopped unexpectedly. Retrying in "
+        + Math.ceil(Number(root.service.retryDelayMs || 0) / 1000) + "s (attempt "
+        + root.service.retryAttempt + " of " + root.service.retryLimit + ").";
+    }
+    if (root.service.recoveryState === "unavailable") {
+      return "The sound backend is unavailable after " + root.service.retryAttempt
+        + " retries. Retry it or check the Omarchy shell logs.";
+    }
+    return "";
   }
 
   function soundTitle(soundId) {
@@ -573,6 +590,30 @@ Item {
           foreground: root.bar ? root.bar.foreground : "white"
           tooltipText: "Dismiss command error"
           onClicked: root.commandError = null
+        }
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+        visible: root.recoveryText.length > 0
+
+        Text {
+          width: parent.width - (root.service && root.service.recoveryState === "unavailable" ? Style.space(96) : 0)
+          text: root.recoveryText
+          textFormat: Text.PlainText
+          color: root.service && root.service.recoveryState === "unavailable" ? Color.urgent : Color.accent
+          font.family: root.bar ? root.bar.fontFamily : "sans-serif"
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+
+        Button {
+          visible: root.service && root.service.recoveryState === "unavailable"
+          text: "Retry"
+          foreground: root.bar ? root.bar.foreground : "white"
+          tooltipText: "Retry the Relaxy sound backend"
+          onClicked: if (root.service) root.service.retryBackend()
         }
       }
 

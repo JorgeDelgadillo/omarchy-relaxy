@@ -91,6 +91,7 @@ gjs -m tests/model.test.js
 RELAXY_AUDIO_SINK=fakesink gjs -m tests/mixer.test.js
 ./tests/ui_contract.sh
 node tests/command_queue.test.js
+node tests/recovery_policy.test.js
 ./tests/service_contract.sh
 ./tests/integration.sh
 ./tests/socket_security.sh
@@ -113,6 +114,13 @@ missing command output and nonzero process exits receive a retry-oriented
 message; backend validation errors retain their specific message. Preset and
 custom-sound editor submissions remain open with their draft intact on failure,
 and the save controls stay disabled until that request settles.
+
+The service supervisor allows five automatic backend restarts, with progressive
+delays of 1, 2, 4, 8, and 15 seconds. It enters an unavailable state after the
+budget is exhausted and exposes a manual retry action through the plugin's
+scoped service API. A 30-second ready uptime resets the retry budget; intentional
+service destruction cancels both timers and suppresses restart. `ui/RecoveryPolicy.js`
+contains the deterministic policy covered by `tests/recovery_policy.test.js`.
 
 ## Recent audio recovery history
 
